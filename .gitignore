@@ -104,6 +104,14 @@ desktop/release/
 desktop/pyinstaller/build/
 desktop/pyinstaller/dist/
 
+# ─── MOBILE (ANDROID) ────────────────────────────────────────
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+# The small release APK in mobile/release/ is tracked so the desktop
+# installer can bundle it via electron-builder "extraFiles".
+
 # ─── EDITOR / IDE ────────────────────────────────────────────
 # VS Code (allow sharing extensions recommendations)
 .vscode/*

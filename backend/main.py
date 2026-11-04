@@ -168,7 +168,9 @@ if __name__ == "__main__":
     import uvicorn
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
+    reload_env = os.environ.get("RELOAD", "1").strip().lower()
+    reload_enabled = reload_env not in ("0", "false", "no", "off")
     if getattr(sys, "frozen", False):
         uvicorn.run(app, host=host, port=port, reload=False)
     else:
-        uvicorn.run("backend.main:app", host=host, port=port, reload=True)
+        uvicorn.run("backend.main:app", host=host, port=port, reload=reload_enabled)

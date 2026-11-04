@@ -1,7 +1,7 @@
 {
   "name": "cheat-clip-pro-desktop",
   "productName": "SinyalAbidnet Kliper Pro",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Desktop shell for SinyalAbidnet Kliper Pro — AI powered auto clipper",
   "author": "SinyalAbidnet Kliper Pro",
@@ -29,8 +29,19 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "splash.html",
       "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "start-mobile.bat",
+        "to": "start-mobile.bat"
+      },
+      {
+        "from": "../mobile/release/SinyalAbidnet-Kliper-Pro-Mobile-1.0.3.apk",
+        "to": "SinyalAbidnet-Kliper-Pro-Mobile-1.0.3.apk"
+      }
     ],
     "extraResources": [
       {

@@ -223,6 +223,8 @@ Outputs in `desktop/release/`:
 
 * `SinyalAbidnet-Kliper-Pro-<version>-portable.exe` — single self-extracting portable exe.
 * `SinyalAbidnet-Kliper-Pro-<version>-win-x64.zip` — unzip and run `SinyalAbidnet Kliper Pro.exe`.
+* `SinyalAbidnet-Kliper-Pro-Mobile-<version>.apk` — Android APK, also copied next to
+  the installed/portable executable together with `start-mobile.bat`.
 
 When launched from the portable exe, user data (temp clips, exports, uploads,
 logs) is stored in a `SinyalAbidnet Kliper Pro Data` folder next to the executable so the
@@ -305,6 +307,116 @@ to every rendered clip:
   pitch. Captions, facecam, voice over, BGM, SFX and watermark are not available
   there, so the app automatically falls back to the Server Engine when any of
   those features is enabled.
+
+---
+
+## 📱 Mobile App (Android APK + PWA)
+
+SinyalAbidnet Kliper Pro has a native Android shell (WebView) that can be
+installed on a phone, plus a PWA option for Android/iPhone. The mobile app is a
+**client**: the backend (desktop app or `start-mobile.bat`) must be running on a
+PC/VPS that the phone can reach over Wi-Fi or the internet.
+
+### Files
+
+| File | Location |
+| --- | --- |
+| Android APK | `mobile/release/SinyalAbidnet-Kliper-Pro-Mobile-1.0.3.apk` |
+| APK inside the installer/portable/ZIP | next to `SinyalAbidnet Kliper Pro.exe` |
+| LAN server launcher (source) | `start-mobile.bat` |
+| LAN server launcher (installed app) | `start-mobile.bat` in the install folder |
+
+### Option A — Desktop app (easiest)
+
+1. Install/run **SinyalAbidnet Kliper Pro 1.0.3** on the PC.
+2. Click the **📱 Mobile** button in the app header.
+   * The backend restarts on `0.0.0.0` and the LAN URL is copied to the
+     clipboard, e.g. `http://192.168.1.10:54321`.
+   * Allow the Windows Firewall prompt for `cheat-clip-backend.exe` on
+     **Private networks** if it appears.
+3. Install the APK on the phone (see below) and enter that URL on first launch.
+4. Click **📱 Mobile** again to turn LAN access off.
+
+The installer and ZIP include the APK next to the executable, so you can copy it
+to the phone via USB, WhatsApp, Google Drive, etc. The portable exe extracts the
+APK alongside the app while it is running.
+
+### Option B — Source checkout (`start-mobile.bat`)
+
+```bat
+start-mobile.bat
+```
+
+This builds `dist` if needed, sets `HOST=0.0.0.0`, `PORT=8000`, disables the
+reloader, prints the LAN URL (e.g. `http://192.168.1.10:8000`) and starts the
+backend. Allow port `8000` in Windows Firewall if prompted:
+
+```powershell
+# Run PowerShell as Administrator
+netsh advfirewall firewall add rule name="SinyalAbidnet Kliper Pro" dir=in action=allow protocol=TCP localport=8000
+```
+
+### Install the APK
+
+1. Copy `SinyalAbidnet-Kliper-Pro-Mobile-1.0.3.apk` to the phone.
+2. Open it and allow **Install unknown apps** for the file manager/browser.
+3. Launch **SinyalAbidnet Kliper Pro**.
+4. Enter the server URL shown by the **📱 Mobile** button or `start-mobile.bat`
+   (for example `http://192.168.1.10:8000`) and tap **Simpan & Buka**.
+   * The app tests `/api/health` before saving.
+   * If the test fails, you can still choose **Simpan Tetap** (useful when the
+     firewall rule is added afterwards).
+5. Long-press the page or open **⋮ → Ganti Server** to change the server later.
+   **⋮ → Muat Ulang** reloads and **⋮ → Buka di Browser** opens the URL in the
+   phone browser.
+
+The APK needs Android 7.0+ (API 24) and targets Android 15. Downloads are saved
+to `Downloads/SinyalAbidnet Kliper Pro/` on Android 10+. On Android 7–9 the
+system download manager uses the app's external files folder; grant storage
+permission to save browser-rendered files to public Downloads.
+
+### Option C — PWA (Android/iPhone, no APK)
+
+Open `http://<PC-IP>:8000` in the phone browser:
+
+* **Android Chrome:** ⋮ → **Install app** / **Add to Home screen**.
+* **iPhone Safari:** Share → **Add to Home Screen**.
+
+The app ships a web manifest, icons and a service worker. A **full** PWA
+(offline shell/service worker) requires **HTTPS** or `localhost`; on a plain LAN
+HTTP address the browser only creates a home-screen shortcut. Put the backend
+behind HTTPS (Caddy, Nginx, Cloudflare Tunnel, etc.) if you want the full PWA.
+
+### Build the APK from source
+
+Requirements: JDK 17, Android SDK with `compileSdk 35` + `build-tools 35.x`,
+and Gradle 8.9+ (the project is tested with Gradle 8.11.1 / AGP 8.7.3).
+
+1. Create `mobile/android/local.properties`:
+
+   ```properties
+   sdk.dir=C:/Users/<you>/AppData/Local/Android/Sdk
+   ```
+
+2. Build:
+
+   ```bat
+   gradle -p mobile/android assembleRelease
+   ```
+
+   or open `mobile/android` in Android Studio and build the `release` variant.
+
+3. Output: `mobile/android/app/build/outputs/apk/release/app-release.apk`.
+
+The checked-in build is signed with the local **Android debug keystore** so it
+can be sideloaded directly. For Google Play, replace `signingConfigs.release`
+in `mobile/android/app/build.gradle` with your own upload keystore.
+
+### Security note
+
+LAN mode has **no authentication**. Only enable it on a trusted home/office
+network. Do not expose port `8000` (or the desktop backend port) directly to the
+public internet without a reverse proxy, HTTPS and access control.
 
 
 

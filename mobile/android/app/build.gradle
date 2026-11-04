@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sinyalabidnet.kliperpro'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.sinyalabidnet.kliperpro"
+        minSdk 24
+        targetSdk 35
+        versionCode 103
+        versionName "1.0.3"
+    }
+
+    signingConfigs {
+        release {
+            // Use the standard local debug keystore so the release APK is installable
+            // via sideload without requiring a separate private keystore.
+            storeFile file(System.getProperty("user.home") + "/.android/debug.keystore")
+            storePassword "android"
+            keyAlias "androiddebugkey"
+            keyPassword "android"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

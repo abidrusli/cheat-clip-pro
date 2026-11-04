@@ -56,6 +56,9 @@ export default function App() {
     return false;
   });
   const [hasCookies, setHasCookies] = useState(false);
+  const isDesktopApp = typeof window !== 'undefined' && Boolean((window as any).electronAPI?.isDesktop);
+  const [mobileEnabled, setMobileEnabled] = useState(false);
+  const [mobileBusy, setMobileBusy] = useState(false);
   const [isDownloadingRaw, setIsDownloadingRaw] = useState(false);
   const [rawDownloadProgress, setRawDownloadProgress] = useState<{
     jobId: string;
@@ -683,6 +686,44 @@ export default function App() {
       }, durationMs);
     }
   }, []);
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.getMobileStatus) return;
+    api.getMobileStatus()
+      .then((status: any) => setMobileEnabled(Boolean(status?.enabled)))
+      .catch(() => {});
+  }, []);
+
+  const handleMobileToggle = async () => {
+    const api = (window as any).electronAPI;
+    if (!api) return;
+    setMobileBusy(true);
+    try {
+      const status = mobileEnabled ? await api.disableMobile() : await api.enableMobile();
+      const enabled = Boolean(status?.enabled);
+      setMobileEnabled(enabled);
+      if (enabled && status?.url) {
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(status.url);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+        setToastMessage(
+          `${t.header.mobileActive}: ${status.url}${copied ? ` — ${t.header.mobileCopied}` : ''}. ${t.header.mobileFirewallHint}`,
+          15000
+        );
+      } else {
+        setToastMessage(t.header.mobileDisabled, 6000);
+      }
+    } catch (err: any) {
+      setToastMessage(`${t.header.mobileError}: ${err?.message || err}`, 10000);
+    } finally {
+      setMobileBusy(false);
+    }
+  };
+
   const [isClearingGlobalTemp, setIsClearingGlobalTemp] = useState<boolean>(false);
   const [showGlobalClearModal, setShowGlobalClearModal] = useState<boolean>(false);
 
@@ -2324,7 +2365,7 @@ Transcript:
             <p className="header-subtitle">{t.header.subtitle}</p>
           </div>
         </div>
-        <div className="header-nav" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+        <div className="header-nav" style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
           <button
             type="button"
             className="cookie-header-btn"
@@ -2397,6 +2438,31 @@ Transcript:
               title={t.header.updateBtnTooltip}
             >
               <span>🔄 {t.header.updateBtn}</span>
+            </button>
+          )}
+          {isDesktopApp && (
+            <button
+              type="button"
+              className="cookie-header-btn"
+              onClick={handleMobileToggle}
+              disabled={mobileBusy}
+              style={{
+                padding: '0.45rem 0.85rem',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                borderRadius: '8px',
+                background: mobileEnabled ? 'rgba(34, 197, 94, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+                border: mobileEnabled ? '1px solid rgba(34, 197, 94, 0.35)' : '1px solid rgba(255, 255, 255, 0.1)',
+                color: mobileEnabled ? '#4ade80' : 'var(--text-secondary)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                cursor: mobileBusy ? 'wait' : 'pointer',
+                transition: 'all 0.2s ease'
+              }}
+              title={t.header.mobileTooltip}
+            >
+              <span>📱 {mobileBusy ? t.header.mobileBusy : mobileEnabled ? t.header.mobileOn : t.header.mobileBtn}</span>
             </button>
           )}
           <LanguageSwitcher />

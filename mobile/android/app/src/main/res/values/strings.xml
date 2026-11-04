@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SinyalAbidnet Kliper Pro</string>
+    <string name="server_title">Server SinyalAbidnet</string>
+    <string name="server_hint">http://192.168.1.10:8000</string>
+    <string name="server_message">Masukkan alamat server yang menjalankan SinyalAbidnet Kliper Pro.\n\nContoh:\n• Satu Wi-Fi: http://192.168.1.10:8000\n• VPS/domain: https://klip.domain.com\n\nDi PC server, jalankan start-mobile.bat lalu masukkan IP yang muncul.</string>
+    <string name="server_save">Simpan &amp; Buka</string>
+    <string name="server_cancel">Batal</string>
+    <string name="server_testing">Menguji koneksi…</string>
+    <string name="server_ok">Server terhubung</string>
+    <string name="server_fail">Tidak bisa terhubung ke server. Periksa IP/port, Wi-Fi, dan firewall.</string>
+    <string name="server_invalid">Alamat tidak valid. Gunakan http:// atau https://</string>
+    <string name="server_save_anyway">Simpan Tetap</string>
+    <string name="server_retry">Coba Lagi</string>
+    <string name="menu_change_server">Ganti Server</string>
+    <string name="menu_reload">Muat Ulang</string>
+    <string name="menu_browser">Buka di Browser</string>
+    <string name="download_started">Mengunduh file…</string>
+    <string name="load_error">Gagal memuat. Tekan lama layar untuk ganti server.</string>
+</resources>

@@ -1,17 +1,20 @@
-const { app, BrowserWindow, shell, dialog } = require('electron');
+const { app, BrowserWindow, shell, dialog, ipcMain } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
 const http = require('node:http');
+const os = require('node:os');
 
 const isDev = !app.isPackaged;
 
 let mainWindow = null;
 let backendProcess = null;
 let backendPort = null;
+let backendHost = '127.0.0.1';
 let backendLogStream = null;
 let isQuitting = false;
+let isRestartingBackend = false;
 let dataRootDir = null;
 
 /**
@@ -83,8 +86,9 @@ function findFreePort() {
   });
 }
 
-function startBackend(port) {
+function startBackend(port, host = '127.0.0.1') {
   const { backendExe, backendDir, webDir } = resolveLayout();
+  backendHost = host;
 
   if (!fs.existsSync(backendExe)) {
     throw new Error(
@@ -103,7 +107,7 @@ function startBackend(port) {
 
   const env = {
     ...process.env,
-    HOST: '127.0.0.1',
+    HOST: host,
     PORT: String(port),
     PYTHONUNBUFFERED: '1',
     PYTHONIOENCODING: 'utf-8',
@@ -139,7 +143,7 @@ function startBackend(port) {
 
   backendProcess.on('exit', (code, signal) => {
     backendLogStream?.write(`[exit] code=${code} signal=${signal}\n`);
-    if (!isQuitting) {
+    if (!isQuitting && !isRestartingBackend) {
       dialog.showErrorBox(
         'SinyalAbidnet Kliper Pro backend stopped',
         `The background service exited unexpectedly (code ${code}).\n` +
@@ -191,6 +195,66 @@ function killBackendTree() {
   }
 }
 
+function getLanIp() {
+  const interfaces = os.networkInterfaces();
+  const candidates = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name] || []) {
+      if (net && net.family === 'IPv4' && !net.internal) {
+        candidates.push(net.address);
+      }
+    }
+  }
+  return (
+    candidates.find((ip) => ip.startsWith('192.168.')) ||
+    candidates.find((ip) => ip.startsWith('10.')) ||
+    candidates.find((ip) => /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)) ||
+    candidates[0] ||
+    '127.0.0.1'
+  );
+}
+
+function getMobileStatus() {
+  const lanIp = getLanIp();
+  return {
+    enabled: backendHost === '0.0.0.0',
+    host: backendHost,
+    port: backendPort,
+    lanIp,
+    url: backendHost === '0.0.0.0' ? `http://${lanIp}:${backendPort}` : '',
+  };
+}
+
+async function restartBackend(host) {
+  if (backendHost === host) return getMobileStatus();
+
+  if (!backendProcess || backendProcess.exitCode !== null) {
+    startBackend(backendPort, host);
+    const ready = await waitForBackend(backendPort, 60000);
+    if (!ready) throw new Error('Backend gagal restart');
+    return getMobileStatus();
+  }
+
+  isRestartingBackend = true;
+  killBackendTree();
+  await new Promise((resolve) => {
+    const timer = setTimeout(resolve, 10000);
+    backendProcess.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  isRestartingBackend = false;
+  backendProcess = null;
+  backendLogStream?.end();
+  backendLogStream = null;
+
+  startBackend(backendPort, host);
+  const ready = await waitForBackend(backendPort, 60000);
+  if (!ready) throw new Error('Backend gagal restart');
+  return getMobileStatus();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -205,6 +269,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
     },
   });
 
@@ -273,7 +338,17 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
-  app.whenReady().then(bootstrap);
+  app.whenReady().then(() => {
+    ipcMain.handle('mobile:get-status', () => getMobileStatus());
+    ipcMain.handle('mobile:enable', () => restartBackend('0.0.0.0'));
+    ipcMain.handle('mobile:disable', () => restartBackend('127.0.0.1'));
+    ipcMain.handle('open-external', (_event, url) => {
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        shell.openExternal(url);
+      }
+    });
+    bootstrap();
+  });
 
   app.on('window-all-closed', () => {
     app.quit();
