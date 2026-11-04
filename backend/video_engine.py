@@ -14,7 +14,7 @@ import contextlib
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union, Callable
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
 logger = logging.getLogger("cheat-clip-pro.video-engine")
 
@@ -1665,6 +1665,250 @@ def render_title_overlay_png(
     os.makedirs(os.path.dirname(output_png_path), exist_ok=True)
     img.save(output_png_path, "PNG")
     return output_png_path
+
+
+THUMBNAIL_STYLE_PRESETS: Dict[str, Dict[str, Any]] = {
+    "viral": {
+        "saturation": 1.28,
+        "contrast": 1.14,
+        "brightness": 1.02,
+        "accent": (255, 69, 58),
+        "accent2": (255, 159, 28),
+        "badge_text": (255, 255, 255),
+    },
+    "cinematic": {
+        "saturation": 0.92,
+        "contrast": 1.18,
+        "brightness": 0.97,
+        "accent": (245, 158, 11),
+        "accent2": (30, 64, 175),
+        "badge_text": (255, 255, 255),
+    },
+    "neon": {
+        "saturation": 1.38,
+        "contrast": 1.15,
+        "brightness": 1.01,
+        "accent": (0, 229, 255),
+        "accent2": (168, 85, 247),
+        "badge_text": (8, 12, 24),
+    },
+    "clean": {
+        "saturation": 1.06,
+        "contrast": 1.06,
+        "brightness": 1.03,
+        "accent": (255, 255, 255),
+        "accent2": (148, 163, 184),
+        "badge_text": (15, 23, 42),
+    },
+}
+
+
+def _thumbnail_dimensions(aspect_ratio: str) -> Tuple[int, int]:
+    """Return a standard high-resolution thumbnail canvas for the requested ratio."""
+    ratio = (aspect_ratio or "16:9").strip().lower()
+    if ratio in ("9:16", "vertical", "portrait", "shorts", "reels"):
+        return 1080, 1920
+    if ratio in ("1:1", "square"):
+        return 1080, 1080
+    if ratio == "4:3":
+        return 1440, 1080
+    return 1280, 720
+
+
+def _thumbnail_cover_crop(frame: Image.Image, target_w: int, target_h: int) -> Image.Image:
+    """Scale and crop a frame to fill the thumbnail canvas without letterboxing."""
+    src_w, src_h = frame.size
+    if src_w <= 0 or src_h <= 0:
+        return frame.resize((target_w, target_h), Image.LANCZOS)
+
+    scale = max(target_w / float(src_w), target_h / float(src_h))
+    new_w = max(target_w, int(math.ceil(src_w * scale)))
+    new_h = max(target_h, int(math.ceil(src_h * scale)))
+    resized = frame.resize((new_w, new_h), Image.LANCZOS)
+
+    left = max(0, (new_w - target_w) // 2)
+    # Vertical thumbnails usually look better when the crop favours the upper
+    # part of the frame, where faces and expressive gestures normally are.
+    top_ratio = 0.30 if target_h > target_w else 0.50
+    top = max(0, int(round((new_h - target_h) * top_ratio)))
+    return resized.crop((left, top, left + target_w, top + target_h))
+
+
+def _thumbnail_title_y_percent(target_w: int, target_h: int) -> float:
+    """Position the title in the lower third of the thumbnail."""
+    if target_h > target_w:
+        return 66.0
+    if target_h == target_w:
+        return 34.0
+    if target_w > target_h * 1.2:
+        return 40.0
+    return 36.0
+
+
+def generate_clip_thumbnail(
+    video_path: str,
+    output_jpg_path: str,
+    timestamp: float = 0.0,
+    title_text: str = "",
+    aspect_ratio: str = "16:9",
+    font_name: str = "Montserrat",
+    text_case: str = "uppercase",
+    style_preset: str = "viral",
+    virality_score: Optional[int] = None,
+) -> Optional[str]:
+    """
+    Extracts a frame from a local clip and turns it into an eye-catching
+    thumbnail: cinematic crop, colour pop, readable gradient, bold title and
+    a virality badge. Returns the saved JPEG path, or None on failure.
+    """
+    if not video_path or not os.path.exists(video_path):
+        return None
+
+    target_w, target_h = _thumbnail_dimensions(aspect_ratio)
+    style = THUMBNAIL_STYLE_PRESETS.get((style_preset or "viral").lower(), THUMBNAIL_STYLE_PRESETS["viral"])
+
+    temp_dir = TEMP_DIR / "thumbnails"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    safe_stem = re.sub(r"[^a-zA-Z0-9_-]", "_", os.path.splitext(os.path.basename(output_jpg_path))[0])[:80] or "thumbnail"
+    frame_path = temp_dir / f"{safe_stem}_frame.jpg"
+    title_overlay_path = temp_dir / f"{safe_stem}_title.png"
+
+    def _extract_frame(at_seconds: float) -> bool:
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{max(0.0, at_seconds):.3f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "2",
+            "-an",
+            str(frame_path),
+        ]
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                timeout=60,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+            return frame_path.exists() and frame_path.stat().st_size > 1000
+        except Exception as exc:
+            logger.debug(f"Thumbnail frame extraction at {at_seconds:.2f}s failed: {exc}")
+            return False
+
+    try:
+        if not _extract_frame(timestamp):
+            if not _extract_frame(0.0):
+                logger.warning(f"Could not extract thumbnail frame from {video_path}")
+                return None
+
+        with Image.open(frame_path) as source:
+            frame = source.convert("RGB")
+
+        frame = _thumbnail_cover_crop(frame, target_w, target_h)
+        frame = ImageEnhance.Color(frame).enhance(float(style["saturation"]))
+        frame = ImageEnhance.Contrast(frame).enhance(float(style["contrast"]))
+        frame = ImageEnhance.Brightness(frame).enhance(float(style["brightness"]))
+        canvas = frame.convert("RGBA")
+
+        # Dark gradient keeps white title text readable on bright footage.
+        gradient = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+        gradient_draw = ImageDraw.Draw(gradient)
+        bottom_start = int(target_h * (0.50 if target_h > target_w else 0.46))
+        bottom_span = max(1, target_h - bottom_start)
+        for y in range(bottom_start, target_h):
+            p = (y - bottom_start) / float(bottom_span)
+            alpha = int(225 * (p ** 1.55))
+            gradient_draw.line([(0, y), (target_w, y)], fill=(0, 0, 0, alpha))
+        top_span = max(1, int(target_h * 0.18))
+        for y in range(top_span):
+            p = 1.0 - (y / float(top_span))
+            gradient_draw.line([(0, y), (target_w, y)], fill=(0, 0, 0, int(65 * p)))
+        canvas.alpha_composite(gradient)
+
+        # Render the title with the same typography engine used by the video.
+        if title_text and title_text.strip():
+            overlay_target_ratio = (
+                "9:16" if target_h > target_w else
+                "1:1" if target_h == target_w else
+                "4:3" if target_w * 3 == target_h * 4 else
+                "16:9_landscape"
+            )
+            title_preset = "big" if target_h > target_w else "medium"
+            rendered = render_title_overlay_png(
+                title_text=title_text.strip(),
+                output_png_path=str(title_overlay_path),
+                font_name=font_name or "Montserrat",
+                target_aspect_ratio=overlay_target_ratio,
+                font_size_preset=title_preset,
+                text_case=text_case or "uppercase",
+                title_position="auto",
+                title_y_percent=_thumbnail_title_y_percent(target_w, target_h),
+                canvas_w=target_w,
+                canvas_h=target_h,
+                title_font_size_preset=title_preset,
+                streamer_preset="none",
+                title_font_name=font_name or "Montserrat",
+                title_text_case=text_case or "uppercase",
+            )
+            if rendered and os.path.exists(rendered):
+                with Image.open(rendered) as title_layer:
+                    canvas.alpha_composite(title_layer.convert("RGBA"))
+
+        draw = ImageDraw.Draw(canvas)
+
+        # Virality badge in the top-left corner.
+        badge_text = "VIRAL CLIP"
+        if virality_score is not None:
+            try:
+                badge_text = f"VIRAL {max(0, min(100, int(virality_score)))}%"
+            except (TypeError, ValueError):
+                badge_text = "VIRAL CLIP"
+        badge_font_size = max(16, int(target_h * 0.034))
+        badge_font = get_font(font_name or "Montserrat", badge_font_size)
+        badge_bbox = draw.textbbox((0, 0), badge_text, font=badge_font)
+        badge_text_w = badge_bbox[2] - badge_bbox[0]
+        badge_text_h = badge_bbox[3] - badge_bbox[1]
+        pad_x = max(10, int(target_h * 0.018))
+        pad_y = max(5, int(target_h * 0.010))
+        margin = max(14, int(target_h * 0.035))
+        badge_rect = [
+            margin,
+            margin,
+            margin + badge_text_w + pad_x * 2,
+            margin + badge_text_h + pad_y * 2,
+        ]
+        draw.rounded_rectangle(
+            badge_rect,
+            radius=max(6, int(target_h * 0.016)),
+            fill=tuple(style["accent"]) + (235,),
+            outline=(255, 255, 255, 90),
+            width=max(1, int(target_h * 0.002)),
+        )
+        draw.text(
+            (badge_rect[0] + pad_x - badge_bbox[0], badge_rect[1] + pad_y - badge_bbox[1]),
+            badge_text,
+            font=badge_font,
+            fill=tuple(style["badge_text"]) + (255,),
+        )
+
+        # Thin accent strip along the bottom edge.
+        bar_h = max(5, int(target_h * 0.009))
+        draw.rectangle([0, target_h - bar_h, target_w, target_h], fill=tuple(style["accent2"]) + (230,))
+
+        os.makedirs(os.path.dirname(output_jpg_path), exist_ok=True)
+        canvas.convert("RGB").save(output_jpg_path, "JPEG", quality=92, optimize=True, progressive=True)
+        return output_jpg_path
+    except Exception as exc:
+        logger.warning(f"Thumbnail generation failed for {video_path}: {exc}")
+        return None
+    finally:
+        for temp_path in (frame_path, title_overlay_path):
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
 
 
 def escape_ass_text(text: str) -> str:

@@ -110,6 +110,13 @@ export default function App() {
   const [manualSubtitlesContent, setManualSubtitlesContent] = useState<string>('');
   const [manualSubtitlesFileName, setManualSubtitlesFileName] = useState<string>('');
 
+  // Language for generated titles, captions, quotes and subtitles.
+  // Defaults to Indonesian so English source videos still produce Indonesian output.
+  const [outputLanguage, setOutputLanguage] = useState<'source' | 'id'>(() => {
+    const saved = localStorage.getItem('cheat_clip_output_language');
+    return saved === 'source' || saved === 'id' ? saved : 'id';
+  });
+
   const parseTimeToSeconds = (val: string): number | null => {
     const clean = val.trim();
     if (!clean) return null;
@@ -546,6 +553,10 @@ export default function App() {
             watermark_opacity: settings.watermarkOpacity !== undefined ? settings.watermarkOpacity : 80.0,
             watermark_x: settings.watermarkX !== undefined ? settings.watermarkX : 90.0,
             watermark_y: settings.watermarkY !== undefined ? settings.watermarkY : 8.0,
+            // Eye-catching thumbnails
+            thumbnail_enabled: settings.thumbnailEnabled !== undefined ? settings.thumbnailEnabled : true,
+            thumbnail_format: settings.thumbnailFormat || '16:9',
+            thumbnail_style: settings.thumbnailStyle || 'viral',
             // Hardware Acceleration / Encoder
             hardware_accel: settings.hardwareAccel || 'auto',
             // Multi-Segment Merged Highlight Video
@@ -1403,6 +1414,7 @@ export default function App() {
       ? `_range_${rangeStartSecs ?? 0}_${rangeEndSecs ?? 'end'}`
       : '';
     const manualSuffix = subtitlesSource === 'manual' ? '_manual' : '';
+    const outputLangSuffix = outputLanguage === 'source' ? '' : `_out_${outputLanguage}`;
 
     // Determine target video identifier
     let targetAnalyzeUrl = sourceMode === 'gdrive' ? gdriveUrl.trim() : url.trim();
@@ -1484,7 +1496,7 @@ export default function App() {
       const promptSuffix = customPrompt.trim() ? `_prompt_${customPrompt.trim().replace(/[^a-zA-Z0-9]/g, '_')}` : '';
       const modelSuffix = `_model_${selectedModel}`;
       const clipsSuffix = clipCountMode === 'auto' ? '_clips_auto' : `_clips_${targetClipCount}`;
-      const cacheKey = `cheat_clip_cache_${videoId}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}`;
+      const cacheKey = `cheat_clip_cache_${videoId}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}${outputLangSuffix}`;
 
       const cachedData = localStorage.getItem(cacheKey);
       if (cachedData) {
@@ -1568,6 +1580,7 @@ export default function App() {
           subtitles: subtitlesSource === 'manual' ? manualSubtitlesContent : undefined,
           subtitles_filename: subtitlesSource === 'manual' ? manualSubtitlesFileName : undefined,
           target_clip_count: clipCountMode === 'auto' ? 'auto' : targetClipCount,
+          output_language: outputLanguage,
           cookies: userCookies || undefined,
         }),
       });
@@ -1672,8 +1685,8 @@ export default function App() {
           const promptSuffix = customPrompt.trim() ? `_prompt_${customPrompt.trim().replace(/[^a-zA-Z0-9]/g, '_')}` : '';
           const modelSuffix = `_model_${selectedModel}`;
           const clipsSuffix = clipCountMode === 'auto' ? '_clips_auto' : `_clips_${targetClipCount}`;
-          const targetCacheKey = `cheat_clip_cache_${resultData.video_id}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}`;
-          const tsKey = `cheat_clip_ts_${resultData.video_id}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}`;
+          const targetCacheKey = `cheat_clip_cache_${resultData.video_id}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}${outputLangSuffix}`;
+          const tsKey = `cheat_clip_ts_${resultData.video_id}_${durationPref}${modelSuffix}${clipsSuffix}${promptSuffix}${rangeSuffix}${manualSuffix}${outputLangSuffix}`;
           localStorage.setItem(targetCacheKey, JSON.stringify(resultData));
           localStorage.setItem(tsKey, new Date().toISOString());
           refreshHistory();
@@ -3226,6 +3239,39 @@ Transcript:
                 💡 <strong>{t.form.subtitlesTipTitle}</strong> {t.form.subtitlesTipDesc} <a href="https://downsub.com/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--secondary)', textDecoration: 'underline', fontWeight: '500' }}>downsub.com</a> {t.form.andUploadOption}
               </span>
             )}
+          </div>
+
+          {/* Output Language Section */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem', marginTop: '0.5rem' }}>
+            <label style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{t.form.outputLanguage}</label>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className={`duration-btn ${outputLanguage === 'source' ? 'active' : ''}`}
+                onClick={() => {
+                  setOutputLanguage('source');
+                  localStorage.setItem('cheat_clip_output_language', 'source');
+                }}
+                disabled={loading}
+              >
+                {t.form.outputLanguageSource}
+              </button>
+              <button
+                type="button"
+                className={`duration-btn ${outputLanguage === 'id' ? 'active' : ''}`}
+                onClick={() => {
+                  setOutputLanguage('id');
+                  localStorage.setItem('cheat_clip_output_language', 'id');
+                }}
+                disabled={loading}
+              >
+                {t.form.outputLanguageIndonesian}
+              </button>
+            </div>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', opacity: 0.85, lineHeight: '1.4' }}>
+              💡 {t.form.outputLanguageHint}
+              {outputLanguage === 'id' ? ` ${t.form.outputLanguageTranslationNote}` : ''}
+            </span>
           </div>
 
           {/* Custom Search Range Section */}

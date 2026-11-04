@@ -30,6 +30,95 @@ MAX_SFX_UPLOAD_BYTES = 50 * 1024 * 1024           # 50 MB
 MAX_IMAGE_UPLOAD_BYTES = 25 * 1024 * 1024         # 25 MB
 MAX_FONT_UPLOAD_BYTES = 50 * 1024 * 1024          # 50 MB
 
+# Audio formats that FFmpeg can decode. Keep this list broad so files picked from
+# Android/iOS (for example WhatsApp .opus notes) are accepted as well.
+AUDIO_EXTENSIONS = {
+    ".mp3", ".mp2", ".wav", ".m4a", ".m4b", ".mp4", ".aac", ".ogg", ".oga",
+    ".opus", ".flac", ".wma", ".aiff", ".aif", ".amr", ".3gp", ".weba",
+    ".mka", ".caf", ".ape", ".ac3", ".eac3",
+}
+
+AUDIO_MIME_TO_EXT = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp2": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/vnd.wave": ".wav",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/aacp": ".aac",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/webm": ".weba",
+    "audio/x-ms-wma": ".wma",
+    "audio/aiff": ".aiff",
+    "audio/x-aiff": ".aiff",
+    "audio/amr": ".amr",
+    "audio/3gpp": ".3gp",
+    "audio/x-matroska": ".mka",
+    "audio/x-caf": ".caf",
+    "audio/x-ape": ".ape",
+    "audio/ac3": ".ac3",
+    "audio/eac3": ".eac3",
+}
+
+AUDIO_MEDIA_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".mp2": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".m4b": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".wma": "audio/x-ms-wma",
+    ".aiff": "audio/aiff",
+    ".aif": "audio/aiff",
+    ".amr": "audio/amr",
+    ".3gp": "audio/3gpp",
+    ".weba": "audio/webm",
+    ".mka": "audio/x-matroska",
+    ".caf": "audio/x-caf",
+    ".ape": "audio/x-ape",
+    ".ac3": "audio/ac3",
+    ".eac3": "audio/eac3",
+}
+
+
+def _resolve_audio_extension(filename: Optional[str], content_type: Optional[str]) -> Optional[str]:
+    """Returns a safe audio extension, inferring it from the MIME type when the
+    browser/WebView sends a filename without one (common on Android)."""
+    name = (filename or "").strip()
+    ext = os.path.splitext(name)[1].lower()
+    if ext in AUDIO_EXTENSIONS:
+        return ext
+
+    mime = (content_type or "").split(";")[0].strip().lower()
+    if mime in AUDIO_MIME_TO_EXT:
+        return AUDIO_MIME_TO_EXT[mime]
+
+    # Some Android file providers report a generic audio MIME type but still
+    # include a usable extension (for example audio/x-matroska + .mka).
+    if mime.startswith("audio/"):
+        if re.fullmatch(r"\.[a-z0-9]{1,6}", ext):
+            return ext
+        return ".mp3"
+
+    return None
+
+
+def _audio_media_type(filename: str) -> str:
+    return AUDIO_MEDIA_TYPES.get(os.path.splitext(filename)[1].lower(), "application/octet-stream")
+
 
 def _is_safe_path(target_path: Path) -> bool:
     """Ensures the resolved file path is strictly located within allowed media directories."""
@@ -260,23 +349,32 @@ def get_video_file(file_name: str, request: Request):
 async def upload_bgm(file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    ext = os.path.splitext(file.filename)[1].lower()
-    allowed = [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"]
-    if ext not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format. Allowed: {', '.join(allowed)}")
-    
-    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    ext = _resolve_audio_extension(file.filename, file.content_type)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported audio format. Please use MP3, WAV, M4A, AAC, OGG/OPUS, or FLAC.",
+        )
+
+    base_name = os.path.splitext(os.path.basename(file.filename))[0] or "bgm"
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', base_name) + ext
     unique_name = f"bgm_{uuid.uuid4().hex[:8]}_{clean_name}"
     save_path = UPLOADS_DIR / unique_name
-    
+
     try:
         bytes_written = await _save_uploaded_file_chunked(file, save_path, MAX_AUDIO_UPLOAD_BYTES)
+        if bytes_written <= 0:
+            if save_path.exists():
+                save_path.unlink()
+            raise HTTPException(status_code=400, detail="The uploaded audio file is empty.")
+        logger.info(f"Uploaded BGM '{file.filename}' -> '{unique_name}' ({bytes_written} bytes)")
         return {
             "success": True,
             "filename": file.filename,
             "saved_name": unique_name,
             "file_path": str(save_path),
             "url": f"/api/audio/{unique_name}",
+            "content_type": _audio_media_type(unique_name),
             "size_bytes": bytes_written
         }
     except HTTPException:
@@ -286,37 +384,92 @@ async def upload_bgm(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _stream_audio_file(file_path: Path, request: Request) -> Response:
+    """Streams audio with byte-range support so the <audio> preview can seek."""
+    file_size = file_path.stat().st_size
+    media_type = _audio_media_type(file_path.name)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{file_path.name}"',
+    }
+
+    range_header = request.headers.get("range")
+    if not range_header:
+        def iter_full():
+            with open(file_path, "rb") as f:
+                while chunk := f.read(1024 * 512):
+                    yield chunk
+
+        headers["Content-Length"] = str(file_size)
+        return StreamingResponse(iter_full(), status_code=200, media_type=media_type, headers=headers)
+
+    range_match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+    if not range_match:
+        return Response(status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                        headers={"Content-Range": f"bytes */{file_size}"})
+
+    start = int(range_match.group(1))
+    end = int(range_match.group(2)) if range_match.group(2) else file_size - 1
+    if start >= file_size or end >= file_size or start > end:
+        return Response(status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                        headers={"Content-Range": f"bytes */{file_size}"})
+
+    content_length = end - start + 1
+
+    def iter_range():
+        with open(file_path, "rb") as f:
+            f.seek(start)
+            bytes_left = content_length
+            while bytes_left > 0:
+                data = f.read(min(1024 * 512, bytes_left))
+                if not data:
+                    break
+                bytes_left -= len(data)
+                yield data
+
+    headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+    headers["Content-Length"] = str(content_length)
+    return StreamingResponse(iter_range(), status_code=206, media_type=media_type, headers=headers)
+
+
 @router.get("/api/audio/{file_name}")
-def get_audio_file(file_name: str):
+def get_audio_file(file_name: str, request: Request):
     clean_name = os.path.basename(file_name)
     file_path = UPLOADS_DIR / clean_name
     if not file_path.exists() or not _is_safe_path(file_path):
         raise HTTPException(status_code=404, detail="Audio file not found")
-    media_type = "audio/mpeg" if clean_name.endswith(".mp3") else "audio/wav" if clean_name.endswith(".wav") else "application/octet-stream"
-    return FileResponse(file_path, media_type=media_type, filename=clean_name)
+    return _stream_audio_file(file_path, request)
 
 
 @router.post("/api/upload-sfx")
 async def upload_hook_sfx(file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    ext = os.path.splitext(file.filename)[1].lower()
-    allowed = [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"]
-    if ext not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format. Allowed: {', '.join(allowed)}")
+    ext = _resolve_audio_extension(file.filename, file.content_type)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported audio format. Please use MP3, WAV, M4A, AAC, OGG/OPUS, or FLAC.",
+        )
 
-    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    base_name = os.path.splitext(os.path.basename(file.filename))[0] or "sfx"
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', base_name) + ext
     unique_name = f"sfx_{uuid.uuid4().hex[:8]}_{clean_name}"
     save_path = UPLOADS_DIR / unique_name
 
     try:
         bytes_written = await _save_uploaded_file_chunked(file, save_path, MAX_SFX_UPLOAD_BYTES)
+        if bytes_written <= 0:
+            if save_path.exists():
+                save_path.unlink()
+            raise HTTPException(status_code=400, detail="The uploaded audio file is empty.")
         return {
             "success": True,
             "filename": file.filename,
             "saved_name": unique_name,
             "file_path": str(save_path),
             "url": f"/api/audio/{unique_name}",
+            "content_type": _audio_media_type(unique_name),
             "size_bytes": bytes_written
         }
     except HTTPException:
@@ -508,16 +661,23 @@ async def upload_voiceover(file: UploadFile = File(...)):
     """Uploads a user voice-over narration audio track to mix into the rendered clip."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
-    ext = os.path.splitext(file.filename)[1].lower()
-    allowed = [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"]
-    if ext not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format. Allowed: {', '.join(allowed)}")
+    ext = _resolve_audio_extension(file.filename, file.content_type)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported audio format. Please use MP3, WAV, M4A, AAC, OGG/OPUS, or FLAC.",
+        )
 
-    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    base_name = os.path.splitext(os.path.basename(file.filename))[0] or "voiceover"
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', base_name) + ext
     unique_name = f"vo_{uuid.uuid4().hex[:8]}_{clean_name}"
     save_path = UPLOADS_DIR / unique_name
     try:
         bytes_written = await _save_uploaded_file_chunked(file, save_path, MAX_VOICEOVER_BYTES)
+        if bytes_written <= 0:
+            if save_path.exists():
+                save_path.unlink()
+            raise HTTPException(status_code=400, detail="The uploaded audio file is empty.")
         logger.info(f"Uploaded voiceover '{file.filename}' -> '{unique_name}' ({bytes_written} bytes)")
         return {
             "success": True,
@@ -525,6 +685,7 @@ async def upload_voiceover(file: UploadFile = File(...)):
             "saved_name": unique_name,
             "file_path": str(save_path),
             "url": f"/api/audio/{unique_name}",
+            "content_type": _audio_media_type(unique_name),
             "size_bytes": bytes_written,
         }
     except HTTPException:

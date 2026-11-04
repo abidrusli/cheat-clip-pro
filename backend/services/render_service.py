@@ -16,12 +16,54 @@ from backend.config import (
     logger,
     render_clip_to_mp4,
     render_title_overlay_png,
+    generate_clip_thumbnail,
     transcribe_clip_words,
 )
 from backend.schemas.render import RenderBatchRequest, RenderSettingsModel
 
 RENDER_BATCHES: Dict[str, Dict[str, Any]] = {}
 BATCH_REQUESTS: Dict[str, RenderBatchRequest] = {}
+
+
+def _resolve_thumbnail_aspect(settings: RenderSettingsModel) -> str:
+    """Resolve the thumbnail canvas ratio, optionally following the clip format."""
+    requested = (getattr(settings, "thumbnail_format", None) or "16:9").strip().lower()
+    if requested != "auto":
+        return requested
+    clip_ratio = (settings.aspect_ratio or "9:16").strip().lower()
+    if clip_ratio in ("16:9", "16:9_landscape"):
+        return "16:9"
+    if clip_ratio in ("1:1", "4:3", "9:16"):
+        return clip_ratio
+    return "16:9"
+
+
+def _make_thumbnail_for_clip(
+    video_path: str,
+    output_filename: str,
+    timestamp: float,
+    title_text: str,
+    settings: RenderSettingsModel,
+    virality_score: Optional[int] = None,
+) -> Optional[str]:
+    """Generate a thumbnail and return its download URL, or None on failure."""
+    if not bool(getattr(settings, "thumbnail_enabled", True)):
+        return None
+    output_path = str(EXPORTS_DIR / output_filename)
+    generated = generate_clip_thumbnail(
+        video_path=video_path,
+        output_jpg_path=output_path,
+        timestamp=timestamp,
+        title_text=title_text,
+        aspect_ratio=_resolve_thumbnail_aspect(settings),
+        font_name=settings.title_font or settings.caption_font or "Outfit",
+        text_case=settings.title_text_case or settings.text_case or "uppercase",
+        style_preset=getattr(settings, "thumbnail_style", None) or "viral",
+        virality_score=virality_score,
+    )
+    if generated and os.path.exists(generated):
+        return f"/api/download-thumbnail/{output_filename}"
+    return None
 
 
 async def render_single_batch_clip(
@@ -232,6 +274,30 @@ async def render_single_batch_clip(
         if not os.path.exists(out_path) or not is_valid_mp4(out_path):
             raise RuntimeError("Rendered MP4 file is incomplete or missing. Please retry rendering.")
 
+        # 4. Generate an eye-catching thumbnail from the raw hook frame.
+        clip_status["progress_percent"] = 92
+        try:
+            hook_abs = clip.get("hook_time")
+            if hook_abs is None:
+                hook_abs = start_t + min(5.0, max(0.0, duration_sec * 0.25))
+            hook_abs = float(hook_abs)
+        except (TypeError, ValueError):
+            hook_abs = start_t + min(5.0, max(0.0, duration_sec * 0.25))
+        thumb_ts = max(0.0, min(max(0.0, duration_sec - 0.05), hook_abs - start_t))
+        thumb_filename = f"clip_{idx+1}_{batch_id}_thumbnail.jpg"
+        thumb_url = await asyncio.to_thread(
+            _make_thumbnail_for_clip,
+            raw_path,
+            thumb_filename,
+            thumb_ts,
+            display_title or base_title,
+            settings,
+            clip.get("virality_score"),
+        )
+        if thumb_url:
+            clip_status["thumbnail_url"] = thumb_url
+            clip_status["thumbnail_path"] = str(EXPORTS_DIR / thumb_filename)
+
         clip_status["status"] = "completed"
         clip_status["progress_percent"] = 100
         clip_status["download_url"] = f"/api/download-rendered/{out_filename}"
@@ -286,8 +352,15 @@ def update_batch_summary_and_zip(batch_id: str, settings: RenderSettingsModel):
                         formatted_name = f"{fn_pfx}{clean_title}{fn_sfx}".strip() or clean_title
                         count = title_counts.get(formatted_name, 0)
                         title_counts[formatted_name] = count + 1
-                        arc_name = f"{formatted_name}.mp4" if count == 0 else f"{formatted_name} ({count}).mp4"
-                        zipf.write(fpath, arcname=arc_name)
+                        arc_base = formatted_name if count == 0 else f"{formatted_name} ({count})"
+                        zipf.write(fpath, arcname=f"{arc_base}.mp4")
+
+                        thumb_url = c.get("thumbnail_url")
+                        if thumb_url:
+                            thumb_name = thumb_url.split("?")[0].split("/")[-1]
+                            thumb_path = EXPORTS_DIR / thumb_name
+                            if thumb_path.exists():
+                                zipf.write(thumb_path, arcname=f"{arc_base}.jpg")
             batch["zip_url"] = f"/api/download-batch-zip/{batch_id}"
         else:
             batch["zip_url"] = None
@@ -541,6 +614,36 @@ async def render_merged_batch_clips(
 
         if not os.path.exists(out_path) or not is_valid_mp4(out_path):
             raise RuntimeError("Merged MP4 file is incomplete or missing. Please retry rendering.")
+
+        # 5. Generate one thumbnail for the merged compilation.
+        clip_status["progress_percent"] = 92
+        thumb_ts = min(5.0, max(0.0, total_duration_sec * 0.25))
+        max_score: Optional[int] = None
+        if clips:
+            try:
+                first_start = float(clips[0].get("start_time", 0.0) or 0.0)
+                first_hook = clips[0].get("hook_time")
+                if first_hook is not None:
+                    thumb_ts = max(0.0, float(first_hook) - first_start)
+                scores = [int(c.get("virality_score") or 0) for c in clips]
+                if scores:
+                    max_score = max(scores)
+            except (TypeError, ValueError):
+                pass
+        thumb_ts = max(0.0, min(max(0.0, total_duration_sec - 0.05), thumb_ts))
+        thumb_filename = f"compilation_{batch_id}_thumbnail.jpg"
+        thumb_url = await asyncio.to_thread(
+            _make_thumbnail_for_clip,
+            raw_merged_path,
+            thumb_filename,
+            thumb_ts,
+            display_title,
+            settings,
+            max_score,
+        )
+        if thumb_url:
+            clip_status["thumbnail_url"] = thumb_url
+            clip_status["thumbnail_path"] = str(EXPORTS_DIR / thumb_filename)
 
         clip_status["status"] = "completed"
         clip_status["progress_percent"] = 100

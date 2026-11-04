@@ -19,6 +19,8 @@ import type {
   HardwareAccelOption,
   HardwareAccelInfo,
   FontItem,
+  ThumbnailFormat,
+  ThumbnailStyle,
 } from '../types';
 
 interface ClipStudioSectionProps {
@@ -65,6 +67,67 @@ function getFriendlyErrorMessage(rawMsg: string): string {
     return 'FFmpeg video rendering failed during composition. Check error details below.';
   }
   return rawMsg.length > 140 ? rawMsg.slice(0, 140) + '...' : rawMsg;
+}
+
+const AUDIO_EXTENSIONS = [
+  '.mp3', '.mp2', '.wav', '.m4a', '.m4b', '.mp4', '.aac', '.ogg', '.oga',
+  '.opus', '.flac', '.wma', '.aiff', '.aif', '.amr', '.3gp', '.weba',
+  '.mka', '.caf', '.ape', '.ac3', '.eac3',
+];
+
+const AUDIO_MIME_EXTENSION: Record<string, string> = {
+  'audio/mpeg': '.mp3',
+  'audio/mp3': '.mp3',
+  'audio/mp2': '.mp3',
+  'audio/wav': '.wav',
+  'audio/x-wav': '.wav',
+  'audio/wave': '.wav',
+  'audio/vnd.wave': '.wav',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/m4a': '.m4a',
+  'audio/aac': '.aac',
+  'audio/aacp': '.aac',
+  'audio/ogg': '.ogg',
+  'audio/opus': '.opus',
+  'audio/flac': '.flac',
+  'audio/x-flac': '.flac',
+  'audio/webm': '.weba',
+  'audio/x-ms-wma': '.wma',
+  'audio/aiff': '.aiff',
+  'audio/x-aiff': '.aiff',
+  'audio/amr': '.amr',
+  'audio/3gpp': '.3gp',
+  'audio/x-matroska': '.mka',
+  'audio/x-caf': '.caf',
+  'audio/x-ape': '.ape',
+  'audio/ac3': '.ac3',
+  'audio/eac3': '.eac3',
+};
+
+/**
+ * Android/iOS file providers sometimes hand the browser a filename without an
+ * extension. The backend needs the extension to validate the audio format, so
+ * add one from the MIME type before uploading.
+ */
+function ensureAudioFileExtension(file: File): File {
+  const name = file.name || 'background-music';
+  const lower = name.toLowerCase();
+  if (AUDIO_EXTENSIONS.some(ext => lower.endsWith(ext))) return file;
+
+  const mime = (file.type || '').toLowerCase().split(';')[0].trim();
+  const ext = AUDIO_MIME_EXTENSION[mime] || (mime.startsWith('audio/') ? '.mp3' : '');
+  if (!ext) return file;
+
+  const base = name.replace(/\.[^./\\]+$/, '') || 'background-music';
+  try {
+    return new File([file], `${base}${ext}`, {
+      type: file.type || mime,
+      lastModified: file.lastModified,
+    });
+  } catch {
+    return file;
+  }
 }
 
 const ClipRenderErrorBox: React.FC<{ errorMessage: string; t: any; onRetry?: () => void }> = ({ errorMessage, t, onRetry }) => {
@@ -210,6 +273,9 @@ export interface StudioPreferences {
   voiceoverPitch?: number;
   voiceoverLoop?: boolean;
   hardwareAccel?: HardwareAccelOption;
+  thumbnailEnabled?: boolean;
+  thumbnailFormat?: ThumbnailFormat;
+  thumbnailStyle?: ThumbnailStyle;
   titleYPercent?: number;
   subtitleYPercent?: number;
   subtitleCenterYPercent?: number;
@@ -258,6 +324,9 @@ export const DEFAULT_STUDIO_PREFS: Required<StudioPreferences> = {
   voiceoverPitch: 0,
   voiceoverLoop: true,
   hardwareAccel: 'auto',
+  thumbnailEnabled: true,
+  thumbnailFormat: '16:9',
+  thumbnailStyle: 'viral',
   titleYPercent: 17,
   subtitleYPercent: 21,
   subtitleCenterYPercent: 50,
@@ -434,6 +503,11 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
 
   // Hardware acceleration / Video Encoder state
   const [hardwareAccel, setHardwareAccel] = useState<HardwareAccelOption>(() => getSavedStudioPreferences().hardwareAccel ?? DEFAULT_STUDIO_PREFS.hardwareAccel);
+
+  // Eye-catching thumbnails generated alongside each rendered clip
+  const [thumbnailEnabled, setThumbnailEnabled] = useState<boolean>(() => getSavedStudioPreferences().thumbnailEnabled ?? DEFAULT_STUDIO_PREFS.thumbnailEnabled);
+  const [thumbnailFormat, setThumbnailFormat] = useState<ThumbnailFormat>(() => getSavedStudioPreferences().thumbnailFormat ?? DEFAULT_STUDIO_PREFS.thumbnailFormat);
+  const [thumbnailStyle, setThumbnailStyle] = useState<ThumbnailStyle>(() => getSavedStudioPreferences().thumbnailStyle ?? DEFAULT_STUDIO_PREFS.thumbnailStyle);
   const [hardwareInfo, setHardwareInfo] = useState<HardwareAccelInfo | null>(null);
 
   useEffect(() => {
@@ -937,10 +1011,16 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
   // Background Music handlers
   const uploadBgmFile = async (file: File) => {
     if (!file) return;
+    const maxBytes = 100 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      alert(t.studio.bgmTooLarge || 'BGM file is too large (max 100 MB). Use MP3 for a smaller file.');
+      return;
+    }
     setIsUploadingBgm(true);
     try {
+      const uploadFile = ensureAudioFileExtension(file);
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', uploadFile, uploadFile.name);
       const res = await fetch('/api/upload-bgm', {
         method: 'POST',
         body: formData,
@@ -956,7 +1036,8 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       setBgmEnabled(true);
     } catch (err) {
       console.error('BGM upload error:', err);
-      alert('Failed to upload background music file. Please try an MP3, WAV, or M4A file.');
+      const message = err instanceof Error ? err.message : String(err);
+      alert(t.studio.bgmUploadError ? t.studio.bgmUploadError(message) : `Failed to upload BGM: ${message}`);
     } finally {
       setIsUploadingBgm(false);
     }
@@ -1061,8 +1142,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     if (!file) return;
     setIsUploadingVoiceover(true);
     try {
+      const uploadFile = ensureAudioFileExtension(file);
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', uploadFile, uploadFile.name);
       const res = await fetch('/api/upload-voiceover', {
         method: 'POST',
         body: formData,
@@ -1077,7 +1159,8 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       setVoiceoverUrl(data.url);
     } catch (err) {
       console.error('Voiceover upload error:', err);
-      alert('Failed to upload voiceover audio. Please use an MP3, WAV, M4A, AAC, OGG, or FLAC file.');
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`Failed to upload voiceover: ${message}`);
     } finally {
       setIsUploadingVoiceover(false);
     }
@@ -1116,8 +1199,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     if (!file) return;
     setIsUploadingHookSfx(true);
     try {
+      const uploadFile = ensureAudioFileExtension(file);
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', uploadFile, uploadFile.name);
       const res = await fetch('/api/upload-sfx', {
         method: 'POST',
         body: formData,
@@ -1132,7 +1216,8 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       setHookSfxAudioUrl(data.url);
     } catch (err) {
       console.error('SFX upload error:', err);
-      alert('Failed to upload sound effect file. Please try an MP3, WAV, or M4A file.');
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`Failed to upload sound effect: ${message}`);
     } finally {
       setIsUploadingHookSfx(false);
     }
@@ -1575,6 +1660,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       voiceoverPitch,
       voiceoverLoop,
       hardwareAccel,
+      thumbnailEnabled,
+      thumbnailFormat,
+      thumbnailStyle,
       titleYPercent,
       subtitleYPercent,
       subtitleCenterYPercent,
@@ -1627,6 +1715,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     voiceoverPitch,
     voiceoverLoop,
     hardwareAccel,
+    thumbnailEnabled,
+    thumbnailFormat,
+    thumbnailStyle,
     titleYPercent,
     subtitleYPercent,
     subtitleCenterYPercent,
@@ -1676,6 +1767,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     setVoiceoverPitch(DEFAULT_STUDIO_PREFS.voiceoverPitch);
     setVoiceoverLoop(DEFAULT_STUDIO_PREFS.voiceoverLoop);
     setHardwareAccel(DEFAULT_STUDIO_PREFS.hardwareAccel);
+    setThumbnailEnabled(DEFAULT_STUDIO_PREFS.thumbnailEnabled);
+    setThumbnailFormat(DEFAULT_STUDIO_PREFS.thumbnailFormat);
+    setThumbnailStyle(DEFAULT_STUDIO_PREFS.thumbnailStyle);
     setTitleYPercent(DEFAULT_STUDIO_PREFS.titleYPercent);
     setSubtitleYPercent(DEFAULT_STUDIO_PREFS.subtitleYPercent);
     setSubtitleCenterYPercent(DEFAULT_STUDIO_PREFS.subtitleCenterYPercent);
@@ -1699,7 +1793,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
   const hasColorGrade = colorBrightness !== 0 || colorContrast !== 0 || colorSaturation !== 0 || colorHue !== 0 || colorTemperature !== 0;
   const hasServerOnlyFeatures = Boolean(
     facecamFilePath || voiceoverFilePath || bgmFilePath || hookSfxFilePath ||
-    watermarkEnabled || (captionStyle && captionStyle !== 'none')
+    watermarkEnabled || thumbnailEnabled || (captionStyle && captionStyle !== 'none')
   );
 
   const applyColorPreset = (preset: 'normal' | 'cinematic' | 'vivid' | 'warm' | 'cool' | 'bw' | 'faded') => {
@@ -1812,6 +1906,10 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       voiceoverLoop,
       // Hardware Acceleration / Video Encoder
       hardwareAccel,
+      // Eye-catching thumbnails
+      thumbnailEnabled,
+      thumbnailFormat,
+      thumbnailStyle,
       renderEngine: hardwareAccel === 'browser_wasm' ? 'client' : 'server',
       // Multi-Segment Merged Highlight Video
       renderMode,
@@ -3069,7 +3167,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                 >
                   <input
                     type="file"
-                    accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,audio/*"
+                    accept=".mp3,.mp2,.wav,.m4a,.m4b,.mp4,.aac,.ogg,.oga,.opus,.flac,.wma,.aiff,.aif,.amr,.3gp,.weba,.mka,.caf,audio/*"
                     onChange={handleBgmUpload}
                     style={{ display: 'none' }}
                     disabled={isUploadingBgm}
@@ -3226,7 +3324,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                 >
                   <input
                     type="file"
-                    accept="audio/mp3,audio/wav,audio/m4a,audio/aac,audio/ogg,audio/flac,audio/mpeg,audio/*"
+                    accept=".mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.aiff,.aif,.amr,.weba,audio/*"
                     onChange={handleHookSfxUpload}
                     style={{ display: 'none' }}
                     disabled={isUploadingHookSfx}
@@ -4173,6 +4271,84 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
             </div>
           </div>
 
+          {/* Thumbnail Generation */}
+          <div className="studio-card-group">
+            <div className="group-header" style={{ marginBottom: '0.65rem' }}>
+              <span className="group-title">{t.studio.thumbnailTitle}</span>
+              <span className="group-badge" style={{ fontWeight: 500 }}>
+                {thumbnailEnabled ? t.studio.thumbnailBadgeOn : t.studio.thumbnailBadgeOff}
+              </span>
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', fontSize: '0.82rem', cursor: 'pointer', color: 'var(--text-primary)', marginBottom: '0.7rem' }}>
+              <input
+                type="checkbox"
+                checked={thumbnailEnabled}
+                onChange={e => setThumbnailEnabled(e.target.checked)}
+                style={{ accentColor: 'var(--primary)', width: '16px', height: '16px', cursor: 'pointer' }}
+              />
+              {t.studio.thumbnailEnableLabel}
+            </label>
+
+            {thumbnailEnabled && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0.7rem' }}>
+                  <div className="hook-input-col">
+                    <label className="hook-input-label">{t.studio.thumbnailFormatLabel}</label>
+                    <select
+                      className="studio-select"
+                      value={thumbnailFormat}
+                      onChange={e => setThumbnailFormat(e.target.value as ThumbnailFormat)}
+                      style={{
+                        width: '100%',
+                        padding: '0.6rem 0.85rem',
+                        borderRadius: '10px',
+                        fontSize: '0.82rem',
+                        background: 'var(--bg-surface-hover)',
+                        border: '1px solid var(--border-color)',
+                        color: '#fff',
+                        cursor: 'pointer',
+                        fontWeight: 500,
+                        outline: 'none',
+                      }}
+                    >
+                      <option value="16:9">{t.studio.thumbnailFormatYoutube}</option>
+                      <option value="9:16">{t.studio.thumbnailFormatVertical}</option>
+                      <option value="1:1">{t.studio.thumbnailFormatSquare}</option>
+                      <option value="auto">{t.studio.thumbnailFormatAuto}</option>
+                    </select>
+                  </div>
+                  <div className="hook-input-col">
+                    <label className="hook-input-label">{t.studio.thumbnailStyleLabel}</label>
+                    <select
+                      className="studio-select"
+                      value={thumbnailStyle}
+                      onChange={e => setThumbnailStyle(e.target.value as ThumbnailStyle)}
+                      style={{
+                        width: '100%',
+                        padding: '0.6rem 0.85rem',
+                        borderRadius: '10px',
+                        fontSize: '0.82rem',
+                        background: 'var(--bg-surface-hover)',
+                        border: '1px solid var(--border-color)',
+                        color: '#fff',
+                        cursor: 'pointer',
+                        fontWeight: 500,
+                        outline: 'none',
+                      }}
+                    >
+                      <option value="viral">{t.studio.thumbnailStyleViral}</option>
+                      <option value="cinematic">{t.studio.thumbnailStyleCinematic}</option>
+                      <option value="neon">{t.studio.thumbnailStyleNeon}</option>
+                      <option value="clean">{t.studio.thumbnailStyleClean}</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="bgm-hint-text">{t.studio.thumbnailHint}</p>
+              </>
+            )}
+          </div>
+
           {/* Video File Name Option */}
           <div className="studio-card-group">
             <div className="group-header">
@@ -5068,6 +5244,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                       const dlUrlWithTitle = c.download_url
                         ? `${c.download_url}${c.download_url.includes('?') ? '&' : '?'}title=${encodeURIComponent(finalClipName)}`
                         : '';
+                      const thumbUrlWithTitle = c.thumbnail_url
+                        ? `${c.thumbnail_url}${c.thumbnail_url.includes('?') ? '&' : '?'}title=${encodeURIComponent(finalClipName)}`
+                        : '';
 
                       return (
                         <div key={i} className="recent-file-row">
@@ -5081,6 +5260,17 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                               title={`Download ${finalClipName}.mp4`}
                             >
                               ⬇️ MP4
+                            </a>
+                          )}
+                          {c.thumbnail_url && (
+                            <a
+                              href={thumbUrlWithTitle}
+                              download={`${finalClipName}.jpg`}
+                              className="quick-dl-btn"
+                              title={t.studio.downloadThumbnailTooltip || `Download ${finalClipName}.jpg`}
+                              style={{ marginLeft: '0.3rem' }}
+                            >
+                              🖼️ JPG
                             </a>
                           )}
                         </div>
@@ -5287,6 +5477,9 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                     const dlUrlWithTitle = clip.download_url
                       ? `${clip.download_url}${clip.download_url.includes('?') ? '&' : '?'}title=${encodeURIComponent(finalClipName)}`
                       : '';
+                    const thumbUrlWithTitle = clip.thumbnail_url
+                      ? `${clip.thumbnail_url}${clip.thumbnail_url.includes('?') ? '&' : '?'}title=${encodeURIComponent(finalClipName)}`
+                      : '';
 
                     const isError = clip.status === 'error';
                     const rawError = clip.error_message || clip.error || '';
@@ -5316,20 +5509,32 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                             {clip.status === 'transcribing' && <span style={{ fontSize: '0.68rem', color: '#8b5cf6' }}>{t.studio.statusCaptionsShort}</span>}
                             {clip.status === 'rendering' && <span style={{ fontSize: '0.68rem', color: '#3b82f6' }}>{t.studio.statusRenderingShort}</span>}
                             {clip.status === 'completed' && (
-                              clip.download_url ? (
-                                <a
-                                  href={dlUrlWithTitle}
-                                  download={`${finalClipName}.mp4`}
-                                  className="quick-dl-btn"
-                                  title={`Download ${finalClipName}.mp4`}
-                                >
-                                  ⬇️ MP4
-                                </a>
-                              ) : (
-                                <span className="quick-dl-btn" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
-                                  ✓ Done
-                                </span>
-                              )
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                {clip.download_url ? (
+                                  <a
+                                    href={dlUrlWithTitle}
+                                    download={`${finalClipName}.mp4`}
+                                    className="quick-dl-btn"
+                                    title={`Download ${finalClipName}.mp4`}
+                                  >
+                                    ⬇️ MP4
+                                  </a>
+                                ) : (
+                                  <span className="quick-dl-btn" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
+                                    ✓ Done
+                                  </span>
+                                )}
+                                {clip.thumbnail_url && (
+                                  <a
+                                    href={thumbUrlWithTitle}
+                                    download={`${finalClipName}.jpg`}
+                                    className="quick-dl-btn"
+                                    title={t.studio.downloadThumbnailTooltip || `Download ${finalClipName}.jpg`}
+                                  >
+                                    🖼️ JPG
+                                  </a>
+                                )}
+                              </div>
                             )}
                             {isError && (
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>

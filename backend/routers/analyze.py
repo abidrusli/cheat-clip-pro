@@ -3,7 +3,8 @@ import json
 import logging
 import os
 import re
-from typing import List, Optional
+import time
+from typing import List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,6 +25,7 @@ from backend.schemas.analyze import (
     AnalyzeResponse,
     HeatmapPoint,
     TranscriptLine,
+    TranslatedTranscript,
     VideoAnalysis,
     ViralClip,
 )
@@ -56,6 +58,186 @@ from backend.utils.text import (
     parse_manual_subtitles,
     sanitize_first_person_title,
 )
+
+
+TRANSLATION_CHUNK_SIZE = 150
+TRANSLATION_TIMEOUT_SEC = 90.0
+
+
+def _resolve_output_language(
+    requested: Optional[str],
+    source_code: str,
+    source_name: str,
+) -> Tuple[str, str]:
+    """Resolve the requested output language into a language code and display name."""
+    target = (requested or "source").strip().lower()
+    if target in ("", "source", "original", "auto", "none"):
+        return source_code, source_name
+    if target in ("id", "in", "indonesia", "indonesian", "bahasa", "bahasa indonesia"):
+        return "id", "Indonesian"
+    if target in ("en", "eng", "english"):
+        return "en", "English"
+    # Unknown values fall back to the source language instead of silently
+    # producing a mixture of languages.
+    logger.warning(f"Unknown output_language '{requested}'. Falling back to source language {source_name}.")
+    return source_code, source_name
+
+
+def _parse_translation_json(raw_text: str) -> List[dict]:
+    """Parse a translation response that may be wrapped in markdown fences."""
+    if not raw_text:
+        return []
+
+    clean_text = raw_text.strip()
+    if clean_text.startswith("```"):
+        clean_text = re.sub(r"^```[a-zA-Z]*\s*", "", clean_text)
+        clean_text = re.sub(r"\s*```$", "", clean_text)
+    clean_text = clean_text.strip()
+
+    candidates = [clean_text, re.sub(r",\s*([\]}])", r"\1", clean_text)]
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+
+        if isinstance(data, dict):
+            data = (
+                data.get("lines")
+                or data.get("translations")
+                or data.get("translated_lines")
+                or []
+            )
+        if not isinstance(data, list):
+            continue
+
+        parsed = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index", item.get("i"))
+            text = item.get("text", item.get("translation"))
+            if index is None or text is None:
+                continue
+            try:
+                parsed.append({"index": int(index), "text": str(text).strip()})
+            except (TypeError, ValueError):
+                continue
+        if parsed:
+            return parsed
+    return []
+
+
+def _extract_translation_lines(response) -> List[dict]:
+    """Extract index/text pairs from a structured Gemini response."""
+    parsed = getattr(response, "parsed", None)
+    lines = None
+    if parsed is not None:
+        lines = getattr(parsed, "lines", None)
+        if lines is None and isinstance(parsed, dict):
+            lines = parsed.get("lines")
+
+    if lines:
+        extracted = []
+        for item in lines:
+            if isinstance(item, dict):
+                index = item.get("index")
+                text = item.get("text")
+            else:
+                index = getattr(item, "index", None)
+                text = getattr(item, "text", None)
+            if index is None or text is None:
+                continue
+            try:
+                extracted.append({"index": int(index), "text": str(text).strip()})
+            except (TypeError, ValueError):
+                continue
+        if extracted:
+            return extracted
+
+    return _parse_translation_json(getattr(response, "text", "") or "")
+
+
+def _translate_transcript_chunk(
+    client,
+    models_to_try: List[str],
+    chunk: List[dict],
+    source_lang_name: str,
+    target_lang_name: str,
+) -> List[str]:
+    """Translate one chunk of subtitle lines while preserving indices and timestamps."""
+    payload = [
+        {"index": i, "text": str(line.get("text", "")).strip()}
+        for i, line in enumerate(chunk)
+    ]
+    prompt = (
+        f"You are a professional subtitle translator for short-form viral videos.\n"
+        f"Translate every subtitle line from {source_lang_name} to natural, conversational {target_lang_name}.\n\n"
+        f"RULES:\n"
+        f"- Translate the meaning naturally, as a human editor would for TikTok, Reels, and Shorts subtitles.\n"
+        f"- Keep each input line as a separate output line with the SAME index.\n"
+        f"- Do NOT merge, split, omit, reorder, or add lines.\n"
+        f"- Do NOT include timestamps, notes, explanations, or surrounding quotation marks.\n"
+        f"- Preserve names, numbers, brands, URLs, hashtags, emojis, and proper nouns.\n"
+        f"- If a line is already in {target_lang_name}, keep it unchanged.\n"
+        f"- Keep translations concise and easy to read on screen.\n"
+        f"- Return ONLY valid JSON matching this schema: {{\"lines\":[{{\"index\":0,\"text\":\"...\"}}]}}.\n\n"
+        f"INPUT JSON:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+    meaningful_indices = [
+        i for i, line in enumerate(chunk)
+        if any(ch.isalnum() for ch in str(line.get("text", "")))
+    ]
+    last_error = None
+
+    for model_name in models_to_try[:3]:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=TranslatedTranscript,
+                        temperature=0.1,
+                        max_output_tokens=32768,
+                    ),
+                )
+                translated = _extract_translation_lines(response)
+                mapping = {}
+                for item in translated:
+                    index = item.get("index")
+                    if isinstance(index, int) and 0 <= index < len(chunk):
+                        text = str(item.get("text", "")).strip()
+                        if text:
+                            mapping[index] = text
+
+                # Every meaningful line must be translated. Missing lines would
+                # leave English text inside an Indonesian-subtitled video.
+                covered = sum(1 for i in meaningful_indices if i in mapping)
+                if meaningful_indices and covered < len(meaningful_indices):
+                    raise ValueError(
+                        f"incomplete translation ({covered}/{len(meaningful_indices)} lines)"
+                    )
+                if not meaningful_indices and not mapping:
+                    return [str(line.get("text", "")) for line in chunk]
+
+                return [
+                    mapping.get(i, str(chunk[i].get("text", "")))
+                    for i in range(len(chunk))
+                ]
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Translation with {model_name} failed (attempt {attempt + 1}/2): {e}"
+                )
+                if attempt == 0:
+                    time.sleep(1.2)
+
+    raise RuntimeError(
+        f"Could not translate transcript chunk with available models: {last_error}"
+    )
 
 
 def _format_parsed_dict(data: dict, channel: str, lang_code: str) -> dict:
@@ -832,14 +1014,110 @@ async def analyze_video(request: AnalyzeRequest):
                 f"- High-Interest Standalone Topics Required: Every single clip MUST focus on an interesting, distinct, and compelling topic, idea, debate, story, funny moment, or revelation. Do NOT produce repetitive, weak, or trivial filler clips."
             )
 
-        # ── Step 4: Build prompt & Detect Language ─────────────────────────────
+        # ── Step 4: Detect language, translate if needed, and build prompt ──────
         detected_lang = detect_transcript_language(enriched_transcript, title)
         lang_code = detected_lang.get('code', 'en')
         lang_name = detected_lang.get('name', 'English')
-        logger.info(f"Detected video language: {lang_name} ({lang_code}) - confidence {detected_lang.get('confidence', 0.0)}")
+        output_lang_code, output_lang_name = _resolve_output_language(
+            request.output_language, lang_code, lang_name
+        )
+        translation_needed = output_lang_code != lang_code
+        logger.info(
+            f"Detected video language: {lang_name} ({lang_code}) - confidence {detected_lang.get('confidence', 0.0)} | "
+            f"Output language: {output_lang_name} ({output_lang_code})"
+        )
+
+        requested_model = (request.model or 'gemini-2.5-flash').strip()
+        if any(dep in requested_model.lower() for dep in ['gemini-1.0', 'gemini-pro-vision']):
+            logger.info(f"Requested model '{requested_model}' is outdated. Upgrading to gemini-2.5-flash.")
+            requested_model = 'gemini-2.5-flash'
+
+        # Create the client early because it is also used for transcript translation.
+        client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=120000))
+
+        # Discover all available Flash models for the user's API key
+        discovered_flash = await asyncio.to_thread(get_flash_models_for_key, client)
+
+        # Build models_to_try (capped at top 4 to prevent prolonged delays):
+        models_to_try = [requested_model]
+        for fm in discovered_flash:
+            if fm not in models_to_try:
+                models_to_try.append(fm)
+        for km in KNOWN_FLASH_MODELS:
+            if km not in models_to_try:
+                models_to_try.append(km)
+
+        models_to_try = models_to_try[:4]
+        logger.info(f"Flash fallback chain prepared: {models_to_try}")
+
+        output_transcript = enriched_transcript
+        if translation_needed:
+            total_lines = len(output_transcript)
+            total_chunks = max(
+                1,
+                (total_lines + TRANSLATION_CHUNK_SIZE - 1) // TRANSLATION_CHUNK_SIZE,
+            )
+            translated_output = []
+            logger.info(
+                f"Translating {total_lines} transcript lines from {lang_name} to "
+                f"{output_lang_name} in {total_chunks} chunk(s)."
+            )
+
+            for chunk_index in range(total_chunks):
+                start_idx = chunk_index * TRANSLATION_CHUNK_SIZE
+                end_idx = min(total_lines, start_idx + TRANSLATION_CHUNK_SIZE)
+                chunk = output_transcript[start_idx:end_idx]
+                progress_pct = int(((chunk_index + 1) / total_chunks) * 100)
+
+                yield _sse({
+                    "step": 3,
+                    "step_progress": 100,
+                    "overall_progress": min(71, 66 + int(progress_pct * 0.05)),
+                    "stage": f"Translating Transcript to {output_lang_name}",
+                    "detail": f"Translating subtitle lines {start_idx + 1}-{end_idx} of {total_lines} to {output_lang_name}...",
+                    "message": f"Translating transcript to {output_lang_name} ({progress_pct}%)..."
+                })
+
+                try:
+                    translated_texts = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _translate_transcript_chunk,
+                            client,
+                            models_to_try,
+                            chunk,
+                            lang_name,
+                            output_lang_name,
+                        ),
+                        timeout=TRANSLATION_TIMEOUT_SEC,
+                    )
+                except Exception as e:
+                    logger.error(f"Transcript translation failed: {e}")
+                    yield _sse({
+                        "error": (
+                            f"Failed to translate the transcript to {output_lang_name}. "
+                            f"Please check your Gemini API key/quota and try again. Details: {e}"
+                        ),
+                        "status": 500,
+                    })
+                    return
+
+                for line, translated_text in zip(chunk, translated_texts):
+                    translated_line = dict(line)
+                    translated_line["text"] = translated_text
+                    translated_output.append(translated_line)
+
+            output_transcript = translated_output
+            yield _sse({
+                "step": 3,
+                "step_progress": 100,
+                "overall_progress": 71,
+                "stage": f"{output_lang_name} Transcript Ready",
+                "detail": f"Translated {total_lines} subtitle lines to {output_lang_name}.",
+                "message": f"Transcript translated to {output_lang_name}."
+            })
 
         transcript_dump = []
-        for line in enriched_transcript:
+        for line in output_transcript:
             eng = f"|{line['engagement']:.2f}" if heatmap and line['engagement'] > 0 else ""
             transcript_dump.append(f"{line['start']:.1f}|{line['end']:.1f}{eng} {line['text']}")
 
@@ -875,7 +1153,7 @@ async def analyze_video(request: AnalyzeRequest):
                 f"CRITICAL USER SEARCH FOCUS:\n"
                 f"The user specifically wants you to find clips matching the following query/theme: \"{request.custom_prompt.strip()}\".\n"
                 f"Prioritize and tailor your selection of viral clips to fit this request, while still ensuring they make good standalone clips.\n"
-                f"IMPORTANT: Regardless of the language this query was typed in, your generated titles, summaries, quotes, and captions MUST REMAIN IN THE VIDEO'S SPOKEN LANGUAGE ({lang_name}). DO NOT translate the video's content to match the language of the search query.\n\n"
+                f"IMPORTANT: Regardless of the language this query was typed in, your generated titles, summaries, quotes, and captions MUST BE IN {output_lang_name.upper()}. DO NOT switch to the language of the search query.\n\n"
             )
 
         channel_context = f"- Channel / Host / Creator: {channel}\n" if channel else ""
@@ -888,25 +1166,26 @@ async def analyze_video(request: AnalyzeRequest):
             f"{channel_context}"
             f"- Video Duration: {int(start_bound)}s to {int(end_bound)}s (Total: {int(duration)}s) | Target clip length: {dur_range}\n"
             f"- Heatmap: {heatmap_note}\n"
-            f"- DETECTED VIDEO SPOKEN LANGUAGE: {lang_name} (Code: '{lang_code}')\n\n"
+            f"- DETECTED SOURCE SPOKEN LANGUAGE: {lang_name} (Code: '{lang_code}')\n"
+            f"- REQUIRED OUTPUT LANGUAGE: {output_lang_name} (Code: '{output_lang_code}')\n\n"
             f"================================================================================\n"
-            f"CRITICAL MANDATORY LANGUAGE RULE (ZERO TRANSLATION):\n"
+            f"CRITICAL MANDATORY OUTPUT LANGUAGE RULE:\n"
             f"================================================================================\n"
-            f"THE MAIN SPOKEN LANGUAGE OF THIS VIDEO IS: {lang_name.upper()} (Language Code: '{lang_code}').\n"
-            f"YOU MUST GENERATE 100% OF ALL CONTENT STRICTLY AND EXCLUSIVELY IN {lang_name.upper()}.\n\n"
-            f"1. NEVER TRANSLATE TO ANY OTHER LANGUAGE!\n"
-            f"   - If the video is in English -> ALL titles, title suggestions, summaries, captions, hashtags, and quotes MUST BE 100% IN ENGLISH. Do NOT write Indonesian, Spanish, or any other language!\n"
-            f"   - If the video is in Indonesian -> ALL titles, title suggestions, summaries, captions, hashtags, and quotes MUST BE 100% IN INDONESIAN. Do NOT write English, Arabic, or any other language!\n"
-            f"   - CRITICAL GUARD FOR INDONESIAN VIDEOS: If speakers use occasional Arabic loanwords or Islamic greetings/phrases (e.g., 'Assalamu\'alaikum', 'Bismillah', 'Alhamdulillah', 'Insya Allah', or Arabic quotes), DO NOT TRANSLATE INTO ARABIC! The video language is 100% BAHASA INDONESIA. All titles, suggestions, and captions MUST be written strictly in BAHASA INDONESIA.\n"
-            f"   - If the video is in another language -> ALL output MUST strictly match that language.\n"
-            f"   - Even if the user's prompt or search query was written in another language, your output MUST REMAIN 100% IN {lang_name.upper()}.\n"
-            f"2. Strict field requirements in {lang_name.upper()}:\n"
-            f"   - `summary`: In {lang_name.upper()}.\n"
-            f"   - `title`: Catchy title in {lang_name.upper()}, max 8 words.\n"
-            f"   - `title_suggestion`: Alternative title in {lang_name.upper()}.\n"
-            f"   - `caption_suggestion`: Engaging social caption in {lang_name.upper()}.\n"
-            f"   - `hashtag_suggestion`: Relevant hashtags in {lang_name.upper()}.\n"
-            f"   - `key_quotes`: MUST be verbatim spoken quotes directly from the transcript in {lang_name.upper()}.\n"
+            f"THE REQUIRED OUTPUT LANGUAGE IS: {output_lang_name.upper()} (Language Code: '{output_lang_code}').\n"
+            f"YOU MUST GENERATE 100% OF ALL CONTENT STRICTLY AND EXCLUSIVELY IN {output_lang_name.upper()}.\n\n"
+            f"1. NEVER OUTPUT IN A DIFFERENT LANGUAGE!\n"
+            f"   - The transcript below is already written in {output_lang_name}.\n"
+            f"   - If the source video was in another language, it has already been translated for you. Do NOT switch back to the source language.\n"
+            f"   - Even if the user's prompt or search query was written in another language, your output MUST REMAIN 100% IN {output_lang_name.upper()}.\n"
+            f"   - Do NOT translate into a third language.\n"
+            f"   - If the output language is Indonesian and speakers use Arabic loanwords or Islamic greetings, keep them as part of Indonesian; do NOT switch the whole output to Arabic.\n"
+            f"2. Strict field requirements in {output_lang_name.upper()}:\n"
+            f"   - `summary`: In {output_lang_name.upper()}.\n"
+            f"   - `title`: Catchy title in {output_lang_name.upper()}, max 8 words.\n"
+            f"   - `title_suggestion`: Alternative title in {output_lang_name.upper()}.\n"
+            f"   - `caption_suggestion`: Engaging social caption in {output_lang_name.upper()}.\n"
+            f"   - `hashtag_suggestion`: Relevant hashtags in {output_lang_name.upper()}.\n"
+            f"   - `key_quotes`: MUST be direct quotes from the transcript below, in {output_lang_name.upper()}.\n"
             f"================================================================================\n\n"
             f"{duration_instruction}\n\n"
             f"{clip_count_instruction}\n\n"
@@ -919,43 +1198,20 @@ async def analyze_video(request: AnalyzeRequest):
             f"   - If the speaker's name is not explicitly stated, use their role or descriptive title (e.g. 'Host Reacts...', 'CEO Reveals...', 'Expert Explains...', 'Guest Breaks Down...' / in Indonesian: 'Host Menjelaskan...', 'Pakar Membongkar...').\n"
             f"   - Or use objective, curiosity-driven framing (e.g. 'The Real Truth About...', 'How To Master...', 'Why Most People Fail At...', 'The Harsh Reality of...' / in Indonesian: 'Fakta Sebenarnya Tentang...', 'Cara Menguasai...').\n"
             f"4. Keep titles snappy, viral, engaging, and under 8 words.\n\n"
-            f"Transcript (start|end[|interest] text):\n---\n{transcript_text}\n---\n\n"
+            f"Transcript (start|end[|interest] text, already in {output_lang_name}):\n---\n{transcript_text}\n---\n\n"
             f"Rules: use exact seconds from transcript; clips must start/end at sentence boundaries; do not overlap.\n"
             f"Return clips sorted by virality_score desc."
         )
-
-        requested_model = (request.model or 'gemini-2.5-flash').strip()
-        if any(dep in requested_model.lower() for dep in ['gemini-1.0', 'gemini-pro-vision']):
-            logger.info(f"Requested model '{requested_model}' is outdated. Upgrading to gemini-2.5-flash.")
-            requested_model = 'gemini-2.5-flash'
 
         yield _sse({
             "step": 4,
             "step_progress": 10,
             "overall_progress": 72,
             "stage": "Language & Context Assembly",
-            "detail": f"Source language: {lang_name} ({lang_code}). Aligning {len(transcript_dump)} dialogue segments for {requested_model}...",
+            "detail": f"Source language: {lang_name} ({lang_code}) → Output: {output_lang_name} ({output_lang_code}). Aligning {len(transcript_dump)} dialogue segments for {requested_model}...",
             "model": requested_model,
-            "message": f"Verified language: {lang_name}. Zero-translation rule enforced for {requested_model}."
+            "message": f"Output language: {output_lang_name}. Preparing {requested_model}..."
         })
-
-        # ── Step 4: Gemini API call with dynamic Flash fallback models and retry ───────────
-        client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=120000))
-        
-        # Discover all available Flash models for the user's API key
-        discovered_flash = await asyncio.to_thread(get_flash_models_for_key, client)
-        
-        # Build models_to_try (capped at top 4 to prevent prolonged delays):
-        models_to_try = [requested_model]
-        for fm in discovered_flash:
-            if fm not in models_to_try:
-                models_to_try.append(fm)
-        for km in KNOWN_FLASH_MODELS:
-            if km not in models_to_try:
-                models_to_try.append(km)
-
-        models_to_try = models_to_try[:4]
-        logger.info(f"Flash fallback chain prepared: {models_to_try}")
 
         response = None
         last_error = None
@@ -1074,13 +1330,13 @@ async def analyze_video(request: AnalyzeRequest):
                                 "summary": getattr(parsed, 'summary', ''),
                                 "clips": [
                                     {
-                                        "title": sanitize_first_person_title(getattr(c, 'title', ''), channel, lang=lang_code),
+                                        "title": sanitize_first_person_title(getattr(c, 'title', ''), channel, lang=output_lang_code),
                                         "start_time": getattr(c, 'start_time', 0.0),
                                         "end_time": getattr(c, 'end_time', 0.0),
                                         "hook_time": getattr(c, 'hook_time', None),
                                         "virality_score": getattr(c, 'virality_score', 0),
                                         "key_quotes": getattr(c, 'key_quotes', []),
-                                        "title_suggestion": sanitize_first_person_title(getattr(c, 'title_suggestion', ''), channel, lang=lang_code),
+                                        "title_suggestion": sanitize_first_person_title(getattr(c, 'title_suggestion', ''), channel, lang=output_lang_code),
                                         "caption_suggestion": getattr(c, 'caption_suggestion', ''),
                                         "hashtag_suggestion": getattr(c, 'hashtag_suggestion', ''),
                                     }
@@ -1090,7 +1346,7 @@ async def analyze_video(request: AnalyzeRequest):
                     
                     # Lenient fallback parser (repairs truncated/unescaped JSON from text)
                     if parsed_data is None and hasattr(resp_candidate, 'text') and resp_candidate.text:
-                        parsed_data = parse_lenient_json_analysis(resp_candidate.text, channel, lang_code)
+                        parsed_data = parse_lenient_json_analysis(resp_candidate.text, channel, output_lang_code)
 
                     if parsed_data is not None:
                         clips_found = len(parsed_data.get('clips', []))
@@ -1212,10 +1468,10 @@ async def analyze_video(request: AnalyzeRequest):
                 else:
                     target_len = 30.0
                 et = min(duration, st + min(90.0, target_len))
-                seg_lines = [l['text'] for l in enriched_transcript if max(l['start'], st) < min(l['end'], et)]
+                seg_lines = [l['text'] for l in output_transcript if max(l['start'], st) < min(l['end'], et)]
                 seg_text = " ".join(seg_lines).strip()
                 preview = seg_text[:60] + "..." if len(seg_text) > 60 else seg_text or f"Viral Highlight #{i+1}"
-                if lang_code == 'id':
+                if output_lang_code == 'id':
                     fallback_clips_list.append({
                         "title": f"Momen Menarik #{i+1}",
                         "start_time": st,
@@ -1227,7 +1483,7 @@ async def analyze_video(request: AnalyzeRequest):
                         "caption_suggestion": f"Momen terbaik dari video: {preview} #viral #trending",
                         "hashtag_suggestion": "#viral #shorts #trending"
                     })
-                elif lang_code == 'es':
+                elif output_lang_code == 'es':
                     fallback_clips_list.append({
                         "title": f"Momento Destacado #{i+1}",
                         "start_time": st,
@@ -1253,9 +1509,9 @@ async def analyze_video(request: AnalyzeRequest):
                     })
             analysis_data['clips'] = fallback_clips_list
             if not analysis_data.get('summary'):
-                if lang_code == 'id':
+                if output_lang_code == 'id':
                     analysis_data['summary'] = f"Analisis video \"{title}\" menemukan {len(fallback_clips_list)} segmen cuplikan pilihan. #viral #highlights"
-                elif lang_code == 'es':
+                elif output_lang_code == 'es':
                     analysis_data['summary'] = f"Análisis de \"{title}\" identificando {len(fallback_clips_list)} segmentos clave. #viral #highlights"
                 else:
                     analysis_data['summary'] = f"Analysis of \"{title}\" identifying {len(fallback_clips_list)} key segments. #viral #highlights"
@@ -1266,13 +1522,13 @@ async def analyze_video(request: AnalyzeRequest):
             "step_progress": 98,
             "overall_progress": 98,
             "stage": "Clip Verification & Alignment",
-            "detail": f"Verified {clip_count} clip segments with precise video timestamps and key quotes in {lang_name}.",
+            "detail": f"Verified {clip_count} clip segments with precise video timestamps and key quotes in {output_lang_name}.",
             "model": successful_model or requested_model,
-            "message": f"Found {clip_count} viral clip candidates ({lang_name}) with {successful_model or requested_model} — reconstructing transcripts..."
+            "message": f"Found {clip_count} viral clip candidates ({output_lang_name}) with {successful_model or requested_model} — reconstructing transcripts..."
         })
-        logger.info(f"Gemini analysis complete with {successful_model or requested_model}. Found {clip_count} clips in {lang_name}.")
+        logger.info(f"Gemini analysis complete with {successful_model or requested_model}. Found {clip_count} clips in {output_lang_name}.")
 
-        # Reconstruct clip transcripts from enriched_transcript
+        # Reconstruct clip transcripts from the translated output transcript
         final_clips = []
         for raw_clip in analysis_data.get('clips', []):
             start = raw_clip.get('start_time', 0.0)
@@ -1293,7 +1549,7 @@ async def analyze_video(request: AnalyzeRequest):
             
             clip_lines = [
                 line.get("text", "")
-                for line in enriched_transcript
+                for line in output_transcript
                 if max(line.get("start", 0.0), start) < min(line.get("end", 0.0), end)
             ]
             
@@ -1302,14 +1558,14 @@ async def analyze_video(request: AnalyzeRequest):
             hashtag_sug = lowercase_hashtags_in_string(raw_clip.get('hashtag_suggestion', ''))
             
             final_clips.append(ViralClip(
-                title=sanitize_first_person_title(raw_clip.get('title', ''), channel, lang=lang_code),
+                title=sanitize_first_person_title(raw_clip.get('title', ''), channel, lang=output_lang_code),
                 start_time=start,
                 end_time=end,
                 hook_time=hook,
                 virality_score=raw_clip.get('virality_score', 0),
                 key_quotes=raw_clip.get('key_quotes') or [],
                 transcript=" ".join(clip_lines),
-                title_suggestion=sanitize_first_person_title(raw_clip.get('title_suggestion', ''), channel, lang=lang_code),
+                title_suggestion=sanitize_first_person_title(raw_clip.get('title_suggestion', ''), channel, lang=output_lang_code),
                 caption_suggestion=caption_sug,
                 hashtag_suggestion=hashtag_sug
             ))
@@ -1334,7 +1590,7 @@ async def analyze_video(request: AnalyzeRequest):
                 text=line["text"],
                 engagement=line.get("engagement")
             )
-            for line in enriched_transcript
+            for line in output_transcript
         ]
 
         # Ensure hashtags are lowercase in the overall summary
@@ -1351,7 +1607,9 @@ async def analyze_video(request: AnalyzeRequest):
             transcript=response_transcript,
             model=successful_model or requested_model,
             video_url=video_url,
-            source_type=source_type
+            source_type=source_type,
+            source_language=lang_code,
+            output_language=output_lang_code
         )
 
         yield _sse({"done": True, "result": final_result.model_dump()})

@@ -201,6 +201,22 @@ def download_rendered_file(file_name: str, title: Optional[str] = None):
     return FileResponse(file_path, media_type="video/mp4", filename=dl_filename)
 
 
+@router.get("/api/download-thumbnail/{file_name}")
+def download_thumbnail(file_name: str, title: Optional[str] = None):
+    safe_name = os.path.basename(file_name)
+    file_path = EXPORTS_DIR / safe_name
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Thumbnail not found")
+
+    dl_filename = safe_name
+    if title and title.strip():
+        clean_title = re.sub(r'[\\/*?:"<>|]', "", title.strip())
+        if clean_title:
+            dl_filename = f"{clean_title}.jpg" if not clean_title.lower().endswith(".jpg") else clean_title
+
+    return FileResponse(file_path, media_type="image/jpeg", filename=dl_filename)
+
+
 @router.get("/api/download-batch-zip/{batch_id}")
 def download_batch_zip(batch_id: str):
     clean_id = os.path.basename(batch_id)
@@ -223,8 +239,15 @@ def download_batch_zip(batch_id: str):
                             clean_title = re.sub(r'[\\/*?:"<>|]', "", raw_title) or os.path.splitext(os.path.basename(c_out))[0]
                             count = title_counts.get(clean_title, 0)
                             title_counts[clean_title] = count + 1
-                            arc_name = f"{clean_title}.mp4" if count == 0 else f"{clean_title} ({count}).mp4"
-                            zipf.write(c_out, arcname=arc_name)
+                            arc_base = clean_title if count == 0 else f"{clean_title} ({count})"
+                            zipf.write(c_out, arcname=f"{arc_base}.mp4")
+
+                            thumb_url = c.get("thumbnail_url")
+                            if thumb_url:
+                                thumb_name = thumb_url.split("?")[0].split("/")[-1]
+                                thumb_path = EXPORTS_DIR / thumb_name
+                                if thumb_path.exists():
+                                    zipf.write(thumb_path, arcname=f"{arc_base}.jpg")
             except Exception as e:
                 logger.error(f"Error packaging batch zip on the fly: {e}")
     if not file_path.exists():

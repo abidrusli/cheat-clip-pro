@@ -287,6 +287,41 @@ Both features live in the Studio settings panel, in the audio/branding card list
 Pitch shifting uses `aresample` + `asetrate` + `atempo`, so it works with the
 bundled FFmpeg without extra plugins.
 
+### Output language (Bahasa Indonesia)
+
+The **Output Language** selector under *Subtitles Source* defaults to
+**Bahasa Indonesia**. Titles, summaries, captions, hashtags, key quotes and
+burned-in subtitles are generated in Indonesian even when the source video and
+transcript are English. The transcript is translated first, then the AI analysis
+runs on the translated lines, so the final clip content stays consistent.
+
+Choose **Follow Video** to keep the original spoken language. The selection is
+saved locally and included in analysis cache/history keys, so switching languages
+never mixes cached English and Indonesian results.
+
+### Audio uploads (BGM, Voice Over, Hook SFX)
+
+BGM, voice-over and hook SFX accept `.mp3`, `.wav`, `.m4a`, `.aac`, `.ogg`,
+`.opus`, `.oga`, `.weba` and `.flac` up to 100 MB. The backend infers the audio
+format from the MIME type when the filename has no extension, rejects empty
+files with a clear error, and streams uploads inline with HTTP range support so
+the preview player can seek. All three upload controls use the same reliable
+audio handling.
+
+### Eye-catching thumbnails
+
+The **🖼️ Eye-Catching Thumbnails** card generates a JPG thumbnail for every
+rendered clip (enabled by default). Choose:
+
+* **Format** — YouTube 16:9 (1280×720), Shorts/Reels 9:16 (1080×1920),
+  square 1:1 (1080×1080), or match the clip's aspect ratio.
+* **Style** — Viral Punch, Cinematic, Neon Glow, or Clean Minimal.
+
+Thumbnails use a strong hook frame, cover crop, colour treatment, readable
+gradient, optional virality badge and the clip title. They are bundled in the
+batch ZIP and can be downloaded individually with the **🖼️ JPG** button next to
+each finished clip.
+
 ### Video color grading
 
 The **🎨 Video Color** card (right after *Your Facecam Avatar*) adds a color grade
@@ -304,9 +339,9 @@ to every rendered clip:
   color grading, pitch, facecam, voice over, BGM, SFX, watermark and captions.
 * **Browser Engine** (`browser_wasm`) renders locally with FFmpeg WASM and
   supports aspect ratio, background style, color grading and original-voice
-  pitch. Captions, facecam, voice over, BGM, SFX and watermark are not available
-  there, so the app automatically falls back to the Server Engine when any of
-  those features is enabled.
+  pitch. Captions, facecam, voice over, BGM, SFX, thumbnails and watermark are
+  not available there, so the app automatically falls back to the Server Engine
+  when any of those features is enabled.
 
 ---
 
@@ -328,7 +363,7 @@ PC/VPS that the phone can reach over Wi-Fi or the internet.
 
 ### Option A — Desktop app (easiest)
 
-1. Install/run **SinyalAbidnet Kliper Pro 1.0.3** on the PC.
+1. Install/run **SinyalAbidnet Kliper Pro 1.0.4** on the PC.
 2. Click the **📱 Mobile** button in the app header.
    * The backend restarts on `0.0.0.0` and the LAN URL is copied to the
      clipboard, e.g. `http://192.168.1.10:54321`.

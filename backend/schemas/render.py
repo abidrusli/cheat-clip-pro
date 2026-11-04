@@ -72,6 +72,10 @@ class RenderSettingsModel(BaseModel):
     color_hue: Optional[float] = 0.0          # -180 .. 180 degrees
     color_temperature: Optional[float] = 0.0  # -100 (cool) .. 100 (warm)
     hardware_accel: Optional[str] = "auto"
+    # Eye-catching thumbnail generation (JPEG, included in ZIP)
+    thumbnail_enabled: Optional[bool] = True
+    thumbnail_format: Optional[str] = "16:9"  # "16:9" | "9:16" | "1:1" | "auto"
+    thumbnail_style: Optional[str] = "viral"  # "viral" | "cinematic" | "neon" | "clean"
     # Multi-Segment Merged Highlight Video
     render_mode: Optional[str] = "separate"  # "separate" | "merged"
     compilation_title: Optional[str] = None

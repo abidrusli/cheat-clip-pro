@@ -35,6 +35,8 @@ export interface AnalyzeResponse {
   model?: string;
   video_url?: string;
   source_type?: 'youtube' | 'upload' | 'gdrive';
+  source_language?: string;
+  output_language?: string;
 }
 
 export type AspectRatioOption = '9:16' | '1:1' | '4:3' | '16:9' | '16:9_landscape';
@@ -66,6 +68,8 @@ export type FacecamPosition = 'auto' | 'bottom_right' | 'top_right' | 'bottom_le
 export type FontSizeOption = 'small' | 'medium' | 'big' | 'custom';
 export type TextCaseOption = 'uppercase' | 'capitalize' | 'lowercase';
 export type HardwareAccelOption = 'auto' | 'nvenc' | 'amf' | 'qsv' | 'cpu' | 'browser_wasm';
+export type ThumbnailFormat = '16:9' | '9:16' | '1:1' | 'auto';
+export type ThumbnailStyle = 'viral' | 'cinematic' | 'neon' | 'clean';
 
 export interface FontItem {
   name: string;
@@ -174,6 +178,10 @@ export interface RenderSettings {
   watermarkY?: number; // 0 to 100%
   // Hardware Acceleration / Video Encoder
   hardwareAccel?: HardwareAccelOption;
+  // Eye-catching thumbnails generated alongside each render
+  thumbnailEnabled?: boolean;
+  thumbnailFormat?: ThumbnailFormat;
+  thumbnailStyle?: ThumbnailStyle;
   // Multi-Segment Merged Highlight Video
   renderMode?: 'separate' | 'merged';
   compilationTitle?: string;
@@ -186,6 +194,8 @@ export interface RenderClipStatus {
   status: 'pending' | 'downloading' | 'transcribing' | 'tracking' | 'rendering' | 'completed' | 'error';
   progress_percent: number;
   download_url?: string;
+  thumbnail_url?: string;
+  thumbnail_path?: string;
   error_message?: string;
   error?: string;
 }
