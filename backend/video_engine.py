@@ -18,12 +18,57 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger("cheat-clip-pro.video-engine")
 
-BASE_DIR = Path(__file__).resolve().parent
-TEMP_DIR = BASE_DIR / "temp_clips"
-EXPORTS_DIR = BASE_DIR / "exports"
-FONTS_DIR = BASE_DIR / "fonts"
-COOKIES_PATH = BASE_DIR / "cookies.txt"
-ROOT_COOKIES_PATH = BASE_DIR.parent / "cookies.txt"
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int = 32) -> int:
+    """Reads an integer env var with clamping and a safe fallback."""
+    try:
+        value = int(str(os.environ.get(name, default)).strip())
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
+# Concurrent fragment downloads per yt-dlp process. Higher = faster on good
+# connections but can trigger YouTube throttling. Tunable via CHEAT_CLIP_YTDLP_CONCURRENCY.
+YT_DLP_CONCURRENT_FRAGMENTS = _env_int("CHEAT_CLIP_YTDLP_CONCURRENCY", 8)
+
+
+def _running_frozen() -> bool:
+    """True when running from a PyInstaller-built executable."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def _resolve_runtime_paths() -> Tuple[Path, Path]:
+    """Resolves (bundle_dir, data_dir) for both source and frozen (PyInstaller) runs.
+
+    bundle_dir: read-only resources shipped with the app (seed fonts, cascades, cascade XML).
+    data_dir:   writable runtime storage (temp clips, exports, uploaded fonts, cookies).
+                In a frozen build this lives under %LOCALAPPDATA%\\SinyalAbidnetKliperPro so resources
+                inside the read-only bundle are never modified.
+    """
+    if _running_frozen():
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)).resolve()
+        bundle_dir = meipass / "backend" if (meipass / "backend").is_dir() else meipass
+        override = os.environ.get("CHEAT_CLIP_DATA_DIR", "").strip()
+        if override:
+            data_dir = Path(override).expanduser().resolve()
+        else:
+            base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
+            data_dir = Path(base) / "SinyalAbidnetKliperPro"
+    else:
+        bundle_dir = Path(__file__).resolve().parent
+        override = os.environ.get("CHEAT_CLIP_DATA_DIR", "").strip()
+        data_dir = Path(override).expanduser().resolve() if override else bundle_dir
+    return bundle_dir, data_dir
+
+
+BUNDLE_DIR, DATA_DIR = _resolve_runtime_paths()
+BASE_DIR = BUNDLE_DIR  # bundled/read-only resource root (kept for backwards compatibility)
+TEMP_DIR = DATA_DIR / "temp_clips"
+EXPORTS_DIR = DATA_DIR / "exports"
+FONTS_DIR = DATA_DIR / "fonts"
+COOKIES_PATH = DATA_DIR / "cookies.txt"
+ROOT_COOKIES_PATH = DATA_DIR / "cookies.txt"
 
 
 def normalize_to_netscape(raw_content: str) -> str:
@@ -54,7 +99,7 @@ def normalize_to_netscape(raw_content: str) -> str:
                 lines = [
                     "# Netscape HTTP Cookie File",
                     "# http://curl.haxx.se/rfc/cookie_spec.html",
-                    "# Converted automatically from JSON format by CheatClip Pro",
+                    "# Converted automatically from JSON format by SinyalAbidnet Kliper Pro",
                     "",
                 ]
                 count = 0
@@ -149,10 +194,31 @@ def get_effective_cookies_path() -> Optional[Path]:
 CASCADE_PATH = BASE_DIR / "haarcascade_frontalface_default.xml"
 CASCADES_DIR = BASE_DIR / "cascades"
 YUNET_MODEL_PATH = CASCADES_DIR / "face_detection_yunet.onnx"
+
+
+def _seed_bundled_fonts() -> None:
+    """Copies fonts shipped with the app into the writable fonts directory (frozen builds)."""
+    source = BUNDLE_DIR / "fonts"
+    if FONTS_DIR == source or not source.is_dir():
+        return
+    try:
+        FONTS_DIR.mkdir(parents=True, exist_ok=True)
+        for item in source.iterdir():
+            if item.is_file():
+                dest = FONTS_DIR / item.name
+                if not dest.exists():
+                    shutil.copy2(item, dest)
+    except OSError as exc:
+        logger.warning(f"Could not seed bundled fonts into {FONTS_DIR}: {exc}")
+
+
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+_seed_bundled_fonts()
 FONTS_DIR.mkdir(parents=True, exist_ok=True)
-CASCADES_DIR.mkdir(parents=True, exist_ok=True)
+if not _running_frozen():
+    # In frozen builds the cascade directory is read-only bundled data.
+    CASCADES_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = TEMP_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -177,10 +243,12 @@ def ensure_ffmpeg_in_path():
     current_path = os.environ.get("PATH") or os.environ.get("Path") or ""
     path_parts = current_path.split(os.pathsep) if current_path else []
 
-    # Ensure Python runtime directories and Scripts are in PATH
+    # Ensure Python runtime directories and Scripts are in PATH.
+    # In frozen builds this also makes bundled ffmpeg/ffprobe/yt-dlp discoverable,
+    # since they are shipped next to the backend executable.
     try:
         py_dir = Path(sys.executable).parent
-        for p in [py_dir, py_dir / "Scripts", py_dir / "bin"]:
+        for p in [py_dir, py_dir / "Scripts", py_dir / "bin", BUNDLE_DIR, BUNDLE_DIR / "bin"]:
             if p.exists():
                 p_str = str(p.resolve())
                 if p_str not in path_parts:
@@ -383,8 +451,12 @@ def get_yt_dlp_base_cmd(
         cmd = ["yt-dlp"]
     else:
         try:
-            import yt_dlp
-            cmd = [sys.executable, "-m", "yt_dlp"]
+            import yt_dlp  # noqa: F401
+            if _running_frozen():
+                # sys.executable is our own frozen binary: re-enter it in module-runner mode.
+                cmd = [sys.executable, "--run-module", "yt_dlp"]
+            else:
+                cmd = [sys.executable, "-m", "yt_dlp"]
         except ImportError:
             raise RuntimeError(
                 "yt-dlp is not installed in this Python environment. "
@@ -679,6 +751,12 @@ def download_clip_segment(
     Otherwise downloads using yt-dlp.
     """
     output_path = TEMP_DIR / output_filename
+    # Reuse an already-downloaded, valid segment instead of downloading it again.
+    # This avoids re-downloading when retrying a render, or when a parallel
+    # prefetch already fetched the segment for this batch/clip.
+    if output_path.exists() and is_valid_mp4(output_path):
+        logger.info(f"Reusing cached source segment: {output_path}")
+        return str(output_path)
     if output_path.exists():
         try:
             output_path.unlink()
@@ -790,7 +868,7 @@ def download_clip_segment(
             "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
             "--force-keyframes-at-cuts",
             "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
-            "-N", "4",
+            "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
             "--socket-timeout", "20",
             "--fragment-retries", "5",
             "--retries", "5",
@@ -903,7 +981,7 @@ def download_clip_segment(
                 "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
                 "--force-keyframes-at-cuts",
                 "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-                "-N", "4",
+                "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
                 "--socket-timeout", "20",
                 "--fragment-retries", "5",
                 "--retries", "5",
@@ -1038,6 +1116,11 @@ def download_full_raw_video(
         cmd = [
             *base_cmd,
             "--no-colors",
+            "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
+            "--socket-timeout", "20",
+            "--fragment-retries", "5",
+            "--retries", "5",
+            "--file-access-retries", "3",
             "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
             "-o", str(output_path),
             "--merge-output-format", "mp4",
@@ -2427,7 +2510,8 @@ def build_ffmpeg_filtergraph(
     title_position: str = "auto",
     ass_subtitles_path: Optional[str] = None,
     face_box: Optional[Dict[str, Any]] = None,
-    title_y_percent: Optional[float] = None
+    title_y_percent: Optional[float] = None,
+    color_filter: Optional[str] = None
 ) -> Tuple[str, str]:
     """
     Constructs the FFmpeg -filter_complex chain with proper aspect ratio center-cropping.
@@ -2731,6 +2815,11 @@ def build_ffmpeg_filtergraph(
         current_v = "[v_with_title]"
 
     full_filter_str = ";".join(filters)
+    # Apply color grading to the source video before layout/overlays so burned-in
+    # subtitles, titles and watermarks keep their original colors.
+    if color_filter:
+        full_filter_str = full_filter_str.replace("[0:v]", "[v_color_src]")
+        full_filter_str = f"[0:v]{color_filter}[v_color_src];{full_filter_str}"
     return full_filter_str, current_v
 
 
@@ -2748,6 +2837,77 @@ def check_has_audio(video_path: str) -> bool:
         return bool(res.stdout and res.stdout.strip())
     except Exception:
         return True
+
+
+def _pitch_shift_filter(semitones: float, sample_rate: int = 48000) -> str:
+    """Builds an ffmpeg filter chain that shifts pitch by `semitones` while
+    preserving duration. Uses aresample + asetrate + atempo so it works on any
+    ffmpeg build without extra plugins. Returns '' when ~0 semitones."""
+    try:
+        st = float(semitones)
+    except (TypeError, ValueError):
+        st = 0.0
+    if not st or abs(st) < 0.05:
+        return ""
+    ratio = 2.0 ** (st / 12.0)
+    parts = [
+        f"aresample={sample_rate}",
+        f"asetrate={sample_rate}*{ratio:.6f}",
+        f"aresample={sample_rate}",
+    ]
+    tempo = 1.0 / ratio
+    # atempo is limited to [0.5, 2.0] per step; decompose extreme values.
+    while tempo > 2.0:
+        parts.append("atempo=2.0")
+        tempo /= 2.0
+    while tempo < 0.5:
+        parts.append("atempo=0.5")
+        tempo /= 0.5
+    parts.append(f"atempo={tempo:.6f}")
+    return ",".join(parts)
+
+
+def _color_grade_filter(
+    brightness: float = 0.0,
+    contrast: float = 0.0,
+    saturation: float = 0.0,
+    hue: float = 0.0,
+    temperature: float = 0.0,
+) -> str:
+    """Builds an ffmpeg filter chain for basic color grading.
+
+    UI-friendly ranges:
+      brightness / contrast / saturation / temperature: -100 .. 100
+      hue: -180 .. 180 degrees
+    Returns '' when every value is neutral.
+    """
+    def _clamp(value, low, high):
+        try:
+            return max(low, min(high, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    b = _clamp(brightness, -100.0, 100.0)
+    c = _clamp(contrast, -100.0, 100.0)
+    s = _clamp(saturation, -100.0, 100.0)
+    h = _clamp(hue, -180.0, 180.0)
+    t = _clamp(temperature, -100.0, 100.0)
+
+    parts = []
+    if abs(b) > 0.01 or abs(c) > 0.01 or abs(s) > 0.01:
+        parts.append(
+            f"eq=brightness={b / 200.0:.4f}:"
+            f"contrast={1.0 + c / 200.0:.4f}:"
+            f"saturation={1.0 + s / 100.0:.4f}"
+        )
+    if abs(h) > 0.01:
+        parts.append(f"hue=h={h:.2f}")
+    if abs(t) > 0.01:
+        # Positive = warmer (more red, less blue), negative = cooler.
+        rs = (t / 100.0) * 0.15
+        bs = -(t / 100.0) * 0.15
+        parts.append(f"colorbalance=rs={rs:.4f}:gs=0.0000:bs={bs:.4f}")
+    return ",".join(parts)
 
 
 def render_clip_to_mp4(
@@ -2787,6 +2947,29 @@ def render_clip_to_mp4(
     original_audio_volume: float = 1.0,
     # Hardware acceleration selection ('auto', 'nvenc', 'amf', 'qsv', 'cpu')
     hardware_accel: Optional[str] = "auto",
+    # Custom Facecam Overlay (user's own camera/avatar)
+    facecam_overlay_enabled: bool = False,
+    facecam_overlay_path: Optional[str] = None,
+    facecam_overlay_position: str = "bottom_right",
+    facecam_overlay_size: float = 25.0,
+    facecam_overlay_opacity: float = 1.0,
+    facecam_overlay_shape: str = "square",
+    facecam_overlay_mirror: bool = False,
+    # Voice Over (own narration audio)
+    voiceover_enabled: bool = False,
+    voiceover_path: Optional[str] = None,
+    voiceover_volume: float = 1.0,
+    voiceover_delay: float = 0.0,
+    voiceover_pitch: float = 0.0,
+    voiceover_loop: bool = True,
+    # Original audio pitch shift (semitones)
+    original_audio_pitch: float = 0.0,
+    # Video color grading
+    color_brightness: float = 0.0,
+    color_contrast: float = 0.0,
+    color_saturation: float = 0.0,
+    color_hue: float = 0.0,
+    color_temperature: float = 0.0,
     title_y_percent: Optional[float] = None
 ) -> str:
     """
@@ -2830,7 +3013,14 @@ def render_clip_to_mp4(
         title_position=title_position,
         ass_subtitles_path=ass_subtitles_path,
         face_box=face_box,
-        title_y_percent=title_y_percent
+        title_y_percent=title_y_percent,
+        color_filter=_color_grade_filter(
+            brightness=color_brightness,
+            contrast=color_contrast,
+            saturation=color_saturation,
+            hue=color_hue,
+            temperature=color_temperature,
+        )
     )
 
     filter_chains = [filter_complex]
@@ -2899,13 +3089,85 @@ def render_clip_to_mp4(
             filter_chains.append(drawtext_cmd)
             out_video_map = "[v_watermarked]"
 
+    # 1b. Custom Facecam Overlay (user's own camera/avatar, looped/single image)
+    if facecam_overlay_enabled and facecam_overlay_path and os.path.exists(facecam_overlay_path):
+        try:
+            fc_ext = os.path.splitext(facecam_overlay_path)[1].lower()
+            fc_is_image = fc_ext in [".png", ".jpg", ".jpeg", ".webp"]
+            fc_idx = input_idx_counter
+            input_idx_counter += 1
+            if fc_is_image:
+                extra_input_args.extend(["-loop", "1", "-framerate", "30", "-i", str(facecam_overlay_path)])
+            else:
+                extra_input_args.extend(["-stream_loop", "-1", "-i", str(facecam_overlay_path)])
+
+            canvas_w = 1920 if aspect_ratio == "16:9_landscape" else 1080
+            fc_w = max(72, min(int(canvas_w * (float(facecam_overlay_size) / 100.0)), canvas_w))
+            fc_opacity = max(0.1, min(1.0, float(facecam_overlay_opacity)))
+            fc_shape = (facecam_overlay_shape or "square").lower().strip()
+
+            prep_parts = []
+            if facecam_overlay_mirror:
+                prep_parts.append("hflip")
+            prep_parts.append(
+                f"scale={fc_w}:{fc_w}:force_original_aspect_ratio=increase,crop={fc_w}:{fc_w}"
+            )
+            prep_parts.append("format=rgba")
+            if fc_shape == "circle":
+                prep_parts.append(
+                    "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*lt(hypot(X-(W/2),Y-(H/2)),W/2)'"
+                )
+            prep_parts.append(f"colorchannelmixer=aa={fc_opacity:.3f}")
+            prep_parts.append("setsar=1")
+            prep_parts.append("fps=30")
+            fc_prep = f"[{fc_idx}:v]" + ",".join(prep_parts) + "[fc_overlay_ready]"
+            filter_chains.append(fc_prep)
+
+            margin = int(max(16.0, canvas_w * 0.03))
+            pos = (facecam_overlay_position or "bottom_right").lower().strip()
+            if pos == "top_left":
+                x_expr, y_expr = f"{margin}", f"{margin}"
+            elif pos == "top_right":
+                x_expr, y_expr = f"W-w-{margin}", f"{margin}"
+            elif pos == "top_center":
+                x_expr, y_expr = f"(W-w)/2", f"{margin}"
+            elif pos == "bottom_left":
+                x_expr, y_expr = f"{margin}", f"H-h-{margin}"
+            elif pos == "bottom_center":
+                x_expr, y_expr = f"(W-w)/2", f"H-h-{margin}"
+            elif pos == "center":
+                x_expr, y_expr = f"(W-w)/2", f"(H-h)/2"
+            elif pos == "left":
+                x_expr, y_expr = f"{margin}", f"(H-h)/2"
+            elif pos == "right":
+                x_expr, y_expr = f"W-w-{margin}", f"(H-h)/2"
+            else:  # bottom_right
+                x_expr, y_expr = f"W-w-{margin}", f"H-h-{margin}"
+
+            overlay_cmd = (
+                f"{out_video_map}[fc_overlay_ready]overlay="
+                f"x={x_expr}:y={y_expr}:eval=init[out_with_facecam]"
+            )
+            filter_chains.append(overlay_cmd)
+            out_video_map = "[out_with_facecam]"
+            logger.info(
+                f"Facecam overlay enabled: {fc_ext} shape={fc_shape} size={fc_w}px "
+                f"opacity={fc_opacity:.2f} position={pos}"
+            )
+        except Exception as e:
+            logger.error(f"Facecam overlay setup failed: {e}")
+
     # 2. Audio Processing (Original Audio with Boost, BGM with start offset, and Hook SFX at frame 0)
     audio_inputs_to_mix = []
     has_orig_audio = check_has_audio(video_path)
+    orig_pitch_chain = _pitch_shift_filter(original_audio_pitch or 0.0)
     if has_orig_audio:
         orig_vol = max(0.0, min(2.0, float(original_audio_volume)))
-        if abs(orig_vol - 1.0) > 0.01:
-            filter_chains.append(f"[0:a:0]volume={orig_vol:.3f}[v_orig_boosted]")
+        if abs(orig_vol - 1.0) > 0.01 or orig_pitch_chain:
+            separators = "," if orig_pitch_chain else ""
+            filter_chains.append(
+                f"[0:a:0]{orig_pitch_chain}{separators}volume={orig_vol:.3f}[v_orig_boosted]"
+            )
             audio_inputs_to_mix.append("[v_orig_boosted]")
         else:
             audio_inputs_to_mix.append("[0:a:0]")
@@ -2939,6 +3201,32 @@ def render_clip_to_mp4(
             f"[{sfx_idx}:a]asetpts=PTS-STARTPTS,atrim=end={dur:.2f},volume={sfx_vol:.3f}[sfx_proc]"
         )
         audio_inputs_to_mix.append("[sfx_proc]")
+
+    # Voice Over (own narration audio with volume, start delay, and pitch shift)
+    if voiceover_enabled and voiceover_path and os.path.exists(voiceover_path):
+        vo_idx = input_idx_counter
+        input_idx_counter += 1
+        if voiceover_loop:
+            extra_input_args.extend(["-stream_loop", "-1", "-i", str(voiceover_path)])
+        else:
+            extra_input_args.extend(["-i", str(voiceover_path)])
+
+        vo_vol = max(0.0, min(2.0, float(voiceover_volume)))
+        vo_pitch_chain = _pitch_shift_filter(voiceover_pitch or 0.0)
+        vo_delay_ms = max(0, int(float(voiceover_delay or 0.0) * 1000))
+        vo_chain = f"[{vo_idx}:a]asetpts=PTS-STARTPTS"
+        if vo_pitch_chain:
+            vo_chain += f",{vo_pitch_chain}"
+        vo_chain += (
+            f",volume={vo_vol:.3f},adelay={vo_delay_ms}|{vo_delay_ms},"
+            f"atrim=end={dur:.2f},asetpts=PTS-STARTPTS[vo_proc]"
+        )
+        filter_chains.append(vo_chain)
+        audio_inputs_to_mix.append("[vo_proc]")
+        logger.info(
+            f"Voice Over enabled: volume={vo_vol:.2f} delay={vo_delay_ms}ms "
+            f"pitch={voiceover_pitch or 0.0}st loop={bool(voiceover_loop)}"
+        )
 
     # Mix audio streams together
     if len(audio_inputs_to_mix) > 1:

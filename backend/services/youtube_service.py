@@ -125,7 +125,11 @@ def fetch_transcript_cli(
     https://github.com/jdepoix/youtube-transcript-api#cli
     """
     escaped_id = f"\\{video_id}" if video_id.startswith("-") else video_id
-    cmd = [sys.executable, "-m", "youtube_transcript_api", escaped_id, "--format", "json"]
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--run-module", "youtube_transcript_api", escaped_id]
+    else:
+        cmd = [sys.executable, "-m", "youtube_transcript_api", escaped_id]
+    cmd.extend(["--format", "json"])
 
     if priority_langs:
         cmd.extend(["--languages"] + priority_langs)

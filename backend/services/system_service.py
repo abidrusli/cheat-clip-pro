@@ -321,6 +321,10 @@ def is_update_allowed() -> bool:
     """
     if os.environ.get("ALLOW_SERVER_UPDATE", "").lower() in ("1", "true", "yes"):
         return True
+    if getattr(sys, "frozen", False):
+        # Packaged desktop builds ship as a frozen executable without a git checkout,
+        # so in-app git/pip/npm self-update must be disabled.
+        return False
     return not is_server_environment()
 
 

@@ -1,4 +1,4 @@
-# 🎬 Cheat Clip PRO
+# 🎬 SinyalAbidnet Kliper Pro
 
 > **AI Powered Auto Clipper — Turn long YouTube, Google Drive, and uploaded videos into viral TikToks, Shorts, and Reels with animated subtitles, face centering, and music in minutes.**
 
@@ -6,7 +6,7 @@
 
 ## ⚡ Quick Start & Setup
 
-Follow these steps to set up and run Cheat Clip PRO locally on **Windows**, **macOS**, or **Linux**.
+Follow these steps to set up and run SinyalAbidnet Kliper Pro locally on **Windows**, **macOS**, or **Linux**.
 
 ### Step 1: Prerequisites
 
@@ -95,7 +95,7 @@ npm run dev
 
 ## 🔄 Updating to the Latest Version
 
-To update Cheat Clip PRO to the latest release:
+To update SinyalAbidnet Kliper Pro to the latest release:
 
 ```bash
 git pull
@@ -108,7 +108,7 @@ pip install -r backend/requirements.txt
 
 ## 🔑 Free Google Gemini API Key (Takes 1 Minute)
 
-Cheat Clip PRO uses Google's AI to find the best viral moments for free:
+SinyalAbidnet Kliper Pro uses Google's AI to find the best viral moments for free:
 1. Go to **[Google AI Studio](https://aistudio.google.com/)** and sign in with any Google account.
 2. Click **"Get API key"** (or **"Create API key"**).
 3. Copy your key (starts with `AIzaSy...`).
@@ -163,7 +163,7 @@ Cheat Clip PRO uses Google's AI to find the best viral moments for free:
 * **Fix:** Click the 🍪 **Cookies** button in the top navigation bar, export your YouTube cookies using a free browser extension (like *Get cookies.txt locally*), and paste them into the app.
 
 ### 4. Does this work on AMD graphics cards and Mac?
-* **Yes!** Cheat Clip PRO automatically supports:
+* **Yes!** SinyalAbidnet Kliper Pro automatically supports:
   * **NVIDIA** (`h264_nvenc`)
   * **AMD** (`h264_amf` on Radeon GPUs & Ryzen CPUs)
   * **Intel** (`h264_qsv` on Arc & UHD Graphics)
@@ -175,3 +175,136 @@ Cheat Clip PRO uses Google's AI to find the best viral moments for free:
 ## 📄 License
 
 Distributed under the **MIT License**. Free for personal and commercial use!
+
+---
+
+## 🖥️ Desktop App (.exe)
+
+SinyalAbidnet Kliper Pro can be packaged as a standalone Windows desktop application
+(Electron shell + a frozen Python backend). The installer bundles Python
+dependencies and FFmpeg, so end users do **not** need Python, Node.js, FFmpeg,
+or yt-dlp installed.
+
+> **Note:** The desktop build excludes the Whisper/PyTorch auto-transcription
+> model to keep the installer small. YouTube captions and manually supplied
+> subtitles (`.srt` / `.txt`) still work fully.
+
+### Prerequisites (build machine only)
+
+* Node.js 18+ and Python 3.10+ (with the backend dependencies installed, see above)
+* FFmpeg + yt-dlp available on `PATH` (they get copied into the installer)
+
+### Build the installer
+
+```bash
+# 1. Install the desktop tooling (Electron + electron-builder)
+npm run desktop:install
+
+# 2. Build everything and produce the installer
+npm run desktop:build
+```
+
+The installer is written to:
+
+```
+desktop/release/SinyalAbidnet-Kliper-Pro-Setup-<version>.exe
+```
+
+### Portable build (no installation)
+
+You can also produce a single portable executable and a zipped folder that run
+without installing anything:
+
+```bash
+npm run desktop:portable
+```
+
+Outputs in `desktop/release/`:
+
+* `SinyalAbidnet-Kliper-Pro-<version>-portable.exe` — single self-extracting portable exe.
+* `SinyalAbidnet-Kliper-Pro-<version>-win-x64.zip` — unzip and run `SinyalAbidnet Kliper Pro.exe`.
+
+When launched from the portable exe, user data (temp clips, exports, uploads,
+logs) is stored in a `SinyalAbidnet Kliper Pro Data` folder next to the executable so the
+whole thing can live on a USB stick.
+
+### Run without installing (development)
+
+```bash
+# Build the frontend + backend first
+npm run desktop:install
+cd desktop
+npm run build:web
+npm run build:backend
+
+# Launch the desktop shell
+npm start
+```
+
+### How it works
+
+* `desktop/main.js` starts the frozen backend (`resources/backend/cheat-clip-backend.exe`)
+  on a free local port and opens the UI in a native window.
+* The backend serves both the API and the built web app, so it runs same-origin.
+* Writable data (temp clips, exports, uploaded fonts) is stored in
+  `%APPDATA%/SinyalAbidnet Kliper Pro/data`; logs go to `%APPDATA%/SinyalAbidnet Kliper Pro/logs`.
+* In-app self-update/restart is disabled in the packaged build (there is no git
+  checkout to pull from). Reinstall a newer installer to update.
+
+### Performance tuning
+
+Clip downloads run in parallel and can be tuned with environment variables:
+
+* `CHEAT_CLIP_DOWNLOAD_CONCURRENCY` — number of clip segments downloaded at the
+  same time (default `3`).
+* `CHEAT_CLIP_YTDLP_CONCURRENCY` — concurrent fragments per yt-dlp download
+  (default `8`).
+
+Set them before launching the app, e.g. in PowerShell:
+`$env:CHEAT_CLIP_DOWNLOAD_CONCURRENCY = "4"`. Very high values may trigger
+YouTube throttling.
+
+### Facecam overlay & Voice Over
+
+Both features live in the Studio settings panel, in the audio/branding card list
+(right below **Original Clip Voice Audio Boost**).
+
+* **Your Facecam Avatar** — upload your own camera/avatar as an `.mp4`/`.mov`/
+  `.webm` video or a `.png`/`.jpg`/`.webp` image. Choose position
+  (top-left/top-right/bottom-left/bottom-right/center), size (8–70% of canvas
+  width), opacity (10–100%), shape (square/circle) and mirror. The overlay is
+  burned onto every rendered clip, which helps make the content unique.
+* **Voice Over** — upload your own narration (`.mp3`/`.wav`/`.m4a`/`.aac`/`.ogg`/
+  `.flac`). Controls: volume (0–200%), start delay (0–30 s), voice pitch
+  (−12…+12 semitones) and loop-until-clip-ends. The narration is mixed with the
+  original audio, BGM and SFX.
+* **Original Voice Pitch** — a separate pitch slider inside *Original Clip Voice
+  Audio Boost* shifts the pitch of the clip's original dialogue without changing
+  its speed (−12…+12 semitones).
+
+Pitch shifting uses `aresample` + `asetrate` + `atempo`, so it works with the
+bundled FFmpeg without extra plugins.
+
+### Video color grading
+
+The **🎨 Video Color** card (right after *Your Facecam Avatar*) adds a color grade
+to every rendered clip:
+
+* **Brightness**, **Contrast**, **Saturation** (−100…+100), **Hue**
+  (−180…+180°) and **Temperature** (−100 cool … +100 warm).
+* One-click presets: Normal, Cinematic, Vivid, Warm, Cool, B&W, Faded.
+* The grade is applied to the source video before titles/subtitles/watermarks are
+  burned in, so text keeps its original color.
+
+### Render engines
+
+* **Server Engine** (`auto`, `nvenc`, `amf`, `qsv`, `cpu`) supports every feature:
+  color grading, pitch, facecam, voice over, BGM, SFX, watermark and captions.
+* **Browser Engine** (`browser_wasm`) renders locally with FFmpeg WASM and
+  supports aspect ratio, background style, color grading and original-voice
+  pitch. Captions, facecam, voice over, BGM, SFX and watermark are not available
+  there, so the app automatically falls back to the Server Engine when any of
+  those features is enabled.
+
+
+

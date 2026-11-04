@@ -15,6 +15,12 @@ export interface ClientRenderOptions {
   titlePosition?: 'top' | 'center' | 'bottom';
   subtitles?: Array<{ start: number; end: number; text: string }>;
   fileName?: string;
+  originalAudioPitch?: number;
+  colorBrightness?: number;
+  colorContrast?: number;
+  colorSaturation?: number;
+  colorHue?: number;
+  colorTemperature?: number;
   onProgress?: (percent: number, stage: string) => void;
 }
 
@@ -71,6 +77,56 @@ export async function getFFmpeg(onLoadProgress?: (ratio: number) => void): Promi
 }
 
 /**
+ * Builds an ffmpeg audio filter that shifts pitch while preserving duration.
+ * Mirrors the backend `_pitch_shift_filter` so both engines sound the same.
+ */
+function buildPitchFilter(semitones?: number): string {
+  const st = clampNum(semitones, -12, 12);
+  if (Math.abs(st) < 0.05) return '';
+  const ratio = Math.pow(2, st / 12);
+  const parts = ['aresample=48000', `asetrate=${Math.round(48000 * ratio)}`, 'aresample=48000'];
+  let tempo = 1 / ratio;
+  while (tempo > 2) { parts.push('atempo=2.0'); tempo /= 2; }
+  while (tempo < 0.5) { parts.push('atempo=0.5'); tempo *= 2; }
+  parts.push(`atempo=${tempo.toFixed(6)}`);
+  return parts.join(',');
+}
+
+function clampNum(value: number | undefined, low: number, high: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(low, Math.min(high, n));
+}
+
+/**
+ * Builds an ffmpeg video filter for color grading. Mirrors the backend helper.
+ */
+function buildColorFilter(options: ClientRenderOptions): string {
+  const b = clampNum(options.colorBrightness, -100, 100);
+  const c = clampNum(options.colorContrast, -100, 100);
+  const s = clampNum(options.colorSaturation, -100, 100);
+  const h = clampNum(options.colorHue, -180, 180);
+  const t = clampNum(options.colorTemperature, -100, 100);
+  const parts: string[] = [];
+  if (Math.abs(b) > 0.01 || Math.abs(c) > 0.01 || Math.abs(s) > 0.01) {
+    parts.push(
+      `eq=brightness=${(b / 200).toFixed(4)}:` +
+      `contrast=${(1 + c / 200).toFixed(4)}:` +
+      `saturation=${(1 + s / 100).toFixed(4)}`
+    );
+  }
+  if (Math.abs(h) > 0.01) {
+    parts.push(`hue=h=${h.toFixed(2)}`);
+  }
+  if (Math.abs(t) > 0.01) {
+    const rs = (t / 100) * 0.15;
+    const bs = -(t / 100) * 0.15;
+    parts.push(`colorbalance=rs=${rs.toFixed(4)}:gs=0.0000:bs=${bs.toFixed(4)}`);
+  }
+  return parts.join(',');
+}
+
+/**
  * Renders a video clip directly in the client's browser using WebAssembly.
  * Fully offloads CPU computation from the server.
  */
@@ -124,6 +180,12 @@ export async function renderClipClientSide(options: ClientRenderOptions): Promis
     filterStr = `[0:v]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,pad=${targetWidth}:${targetHeight}:(ow-iw)/2:(oh-ih)/2:black[v]`;
   }
 
+  // Apply color grading to the source before scaling/layout.
+  const colorFilter = buildColorFilter(options);
+  if (colorFilter) {
+    filterStr = filterStr.replace(/\[0:v\]/g, `[0:v]${colorFilter},`);
+  }
+
   const outputName = 'output.mp4';
   const ffmpegArgs: string[] = ['-i', 'input.mp4'];
 
@@ -138,6 +200,14 @@ export async function renderClipClientSide(options: ClientRenderOptions): Promis
     '-filter_complex', filterStr,
     '-map', '[v]',
     '-map', '0:a?',
+  );
+
+  const pitchFilter = buildPitchFilter(options.originalAudioPitch);
+  if (pitchFilter) {
+    ffmpegArgs.push('-af', pitchFilter);
+  }
+
+  ffmpegArgs.push(
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-crf', '24',

@@ -1,5 +1,5 @@
 # ============================================================
-# CHEAT CLIP — .gitignore
+# SINYALABIDNET KLIPER — .gitignore
 # ============================================================
 
 # ─── SECRETS & ENVIRONMENT ───────────────────────────────────
@@ -96,6 +96,13 @@ scratch/
 *.tmp
 *.temp
 *.bak
+buildlog*.txt
+
+# ─── DESKTOP (ELECTRON) ──────────────────────────────────────
+desktop/node_modules/
+desktop/release/
+desktop/pyinstaller/build/
+desktop/pyinstaller/dist/
 
 # ─── EDITOR / IDE ────────────────────────────────────────────
 # VS Code (allow sharing extensions recommendations)

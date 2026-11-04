@@ -1,12 +1,12 @@
 @echo off
 setlocal enabledelayedexpansion
-title Cheat Clip PRO Updater
+title SinyalAbidnet Kliper Pro Updater
 
 :: Change directory safely to current folder (handling spaces in path)
 cd /d "%~dp0"
 
 echo ===================================================
-echo   Updating Cheat Clip PRO to Latest Version
+echo   Updating SinyalAbidnet Kliper Pro to Latest Version
 echo ===================================================
 
 :: Setup PATH

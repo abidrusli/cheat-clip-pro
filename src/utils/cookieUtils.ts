@@ -34,7 +34,7 @@ export function normalizeCookies(rawContent: string): string {
         const lines: string[] = [
           '# Netscape HTTP Cookie File',
           '# http://curl.haxx.se/rfc/cookie_spec.html',
-          '# Converted automatically from JSON format by CheatClip Pro',
+          '# Converted automatically from JSON format by SinyalAbidnet Kliper Pro',
           '',
         ];
         let count = 0;

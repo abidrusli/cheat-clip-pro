@@ -135,6 +135,33 @@ export interface RenderSettings {
   hookSfxVolume?: number; // 0 to 150%
   // Raw Audio / Voice Boost
   originalAudioVolume?: number; // 0 to 200%
+  originalAudioPitch?: number; // semitones (-12 to +12)
+  // Video Color Grading
+  colorBrightness?: number; // -100 to 100
+  colorContrast?: number; // -100 to 100
+  colorSaturation?: number; // -100 to 100
+  colorHue?: number; // -180 to 180 degrees
+  colorTemperature?: number; // -100 (cool) to 100 (warm)
+  // Custom Facecam Overlay (user's own camera/avatar)
+  facecamOverlayEnabled?: boolean;
+  facecamOverlayFilePath?: string;
+  facecamOverlayFileName?: string;
+  facecamOverlayUrl?: string;
+  facecamOverlayMediaType?: 'video' | 'image';
+  facecamOverlayPosition?: string; // 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right' | 'center'
+  facecamOverlaySize?: number; // 8 to 70 (% of canvas width)
+  facecamOverlayOpacity?: number; // 10 to 100%
+  facecamOverlayShape?: 'square' | 'circle';
+  facecamOverlayMirror?: boolean;
+  // Voice Over (own narration audio)
+  voiceoverEnabled?: boolean;
+  voiceoverFilePath?: string;
+  voiceoverFileName?: string;
+  voiceoverUrl?: string;
+  voiceoverVolume?: number; // 0 to 200%
+  voiceoverDelay?: number; // seconds before voiceover starts
+  voiceoverPitch?: number; // semitones (-12 to +12)
+  voiceoverLoop?: boolean;
   // Watermark
   watermarkEnabled?: boolean;
   watermarkType?: 'image' | 'text';

@@ -437,6 +437,103 @@ async def detect_face(
     return default_res
 
 
+MAX_FACECAM_VIDEO_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+MAX_VOICEOVER_BYTES = 200 * 1024 * 1024           # 200 MB
+
+
+@router.post("/api/upload-facecam")
+async def upload_facecam(file: UploadFile = File(...)):
+    """Uploads the user's own facecam/avatar (video or image) used as a clip overlay."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    ext = os.path.splitext(file.filename)[1].lower()
+    video_exts = [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"]
+    image_exts = [".png", ".jpg", ".jpeg", ".webp"]
+    if ext in video_exts:
+        media_kind = "video"
+        max_bytes = MAX_FACECAM_VIDEO_BYTES
+    elif ext in image_exts:
+        media_kind = "image"
+        max_bytes = MAX_IMAGE_UPLOAD_BYTES
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported facecam format. Allowed: {', '.join(video_exts + image_exts)}",
+        )
+
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    unique_name = f"facecam_{uuid.uuid4().hex[:8]}_{clean_name}"
+    save_path = UPLOADS_DIR / unique_name
+    try:
+        bytes_written = await _save_uploaded_file_chunked(file, save_path, max_bytes)
+        logger.info(f"Uploaded facecam '{file.filename}' -> '{unique_name}' ({media_kind}, {bytes_written} bytes)")
+        return {
+            "success": True,
+            "filename": file.filename,
+            "saved_name": unique_name,
+            "file_path": str(save_path),
+            "url": f"/api/facecam/{unique_name}",
+            "media_type": media_kind,
+            "size_bytes": bytes_written,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload facecam: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/facecam/{file_name}")
+def get_facecam_file(file_name: str):
+    clean_name = os.path.basename(file_name)
+    file_path = UPLOADS_DIR / clean_name
+    if not file_path.exists() or not _is_safe_path(file_path):
+        raise HTTPException(status_code=404, detail="Facecam file not found")
+    ext = os.path.splitext(clean_name)[1].lower()
+    if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+        media_type = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/jpeg"
+    elif ext == ".webm":
+        media_type = "video/webm"
+    elif ext == ".mov":
+        media_type = "video/quicktime"
+    elif ext == ".mkv":
+        media_type = "video/x-matroska"
+    else:
+        media_type = "video/mp4"
+    return FileResponse(file_path, media_type=media_type, filename=clean_name)
+
+
+@router.post("/api/upload-voiceover")
+async def upload_voiceover(file: UploadFile = File(...)):
+    """Uploads a user voice-over narration audio track to mix into the rendered clip."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
+    ext = os.path.splitext(file.filename)[1].lower()
+    allowed = [".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"]
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format. Allowed: {', '.join(allowed)}")
+
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    unique_name = f"vo_{uuid.uuid4().hex[:8]}_{clean_name}"
+    save_path = UPLOADS_DIR / unique_name
+    try:
+        bytes_written = await _save_uploaded_file_chunked(file, save_path, MAX_VOICEOVER_BYTES)
+        logger.info(f"Uploaded voiceover '{file.filename}' -> '{unique_name}' ({bytes_written} bytes)")
+        return {
+            "success": True,
+            "filename": file.filename,
+            "saved_name": unique_name,
+            "file_path": str(save_path),
+            "url": f"/api/audio/{unique_name}",
+            "size_bytes": bytes_written,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload voiceover: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/upload-font")
 async def upload_font(file: UploadFile = File(...)):
     """

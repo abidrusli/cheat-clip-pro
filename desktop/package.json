@@ -1,0 +1,73 @@
+{
+  "name": "cheat-clip-pro-desktop",
+  "productName": "SinyalAbidnet Kliper Pro",
+  "version": "1.0.2",
+  "private": true,
+  "description": "Desktop shell for SinyalAbidnet Kliper Pro — AI powered auto clipper",
+  "author": "SinyalAbidnet Kliper Pro",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:web": "node scripts/build-web.mjs",
+    "build:backend": "node scripts/build-backend.mjs",
+    "dist": "npm run build:web && npm run build:backend && electron-builder --win nsis",
+    "dist:portable": "npm run build:web && npm run build:backend && electron-builder --win portable",
+    "dist:zip": "npm run build:web && npm run build:backend && electron-builder --win dir && node scripts/make-portable-zip.mjs",
+    "pack": "npm run build:web && npm run build:backend && electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.sinyalabidnet.kliperpro.desktop",
+    "productName": "SinyalAbidnet Kliper Pro",
+    "copyright": "Copyright © SinyalAbidnet Kliper Pro",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "main.js",
+      "splash.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist",
+        "to": "web"
+      },
+      {
+        "from": "pyinstaller/dist/cheat-clip-backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build-resources/icon.ico",
+      "artifactName": "SinyalAbidnet-Kliper-Pro-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "SinyalAbidnet Kliper Pro",
+      "uninstallDisplayName": "SinyalAbidnet Kliper Pro",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "SinyalAbidnet-Kliper-Pro-${version}-portable.${ext}",
+      "requestExecutionLevel": "user"
+    }
+  }
+}

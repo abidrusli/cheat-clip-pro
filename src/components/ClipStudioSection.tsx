@@ -194,6 +194,21 @@ export interface StudioPreferences {
   subtitlePositionMode?: SubtitlePositionMode;
   titleDuration?: TitleDurationOption;
   originalAudioVolume?: number;
+  originalAudioPitch?: number;
+  colorBrightness?: number;
+  colorContrast?: number;
+  colorSaturation?: number;
+  colorHue?: number;
+  colorTemperature?: number;
+  facecamOverlayPosition?: string;
+  facecamOverlaySize?: number;
+  facecamOverlayOpacity?: number;
+  facecamOverlayShape?: 'square' | 'circle';
+  facecamOverlayMirror?: boolean;
+  voiceoverVolume?: number;
+  voiceoverDelay?: number;
+  voiceoverPitch?: number;
+  voiceoverLoop?: boolean;
   hardwareAccel?: HardwareAccelOption;
   titleYPercent?: number;
   subtitleYPercent?: number;
@@ -227,6 +242,21 @@ export const DEFAULT_STUDIO_PREFS: Required<StudioPreferences> = {
   subtitlePositionMode: 'bottom',
   titleDuration: 'entire',
   originalAudioVolume: 100,
+  originalAudioPitch: 0,
+  colorBrightness: 0,
+  colorContrast: 0,
+  colorSaturation: 0,
+  colorHue: 0,
+  colorTemperature: 0,
+  facecamOverlayPosition: 'bottom_right',
+  facecamOverlaySize: 25,
+  facecamOverlayOpacity: 100,
+  facecamOverlayShape: 'square',
+  facecamOverlayMirror: false,
+  voiceoverVolume: 100,
+  voiceoverDelay: 0,
+  voiceoverPitch: 0,
+  voiceoverLoop: true,
   hardwareAccel: 'auto',
   titleYPercent: 17,
   subtitleYPercent: 21,
@@ -369,6 +399,38 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
   const [isUploadingWatermark, setIsUploadingWatermark] = useState<boolean>(false);
   const [isWatermarkDragging, setIsWatermarkDragging] = useState<boolean>(false);
   const phoneContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Custom Facecam Overlay (user's own camera/avatar) state
+  const [facecamFileName, setFacecamFileName] = useState<string>('');
+  const [facecamFilePath, setFacecamFilePath] = useState<string>('');
+  const [facecamUrl, setFacecamUrl] = useState<string>('');
+  const [facecamMediaType, setFacecamMediaType] = useState<'video' | 'image'>('video');
+  const [isUploadingFacecam, setIsUploadingFacecam] = useState<boolean>(false);
+  const [isFacecamDragging, setIsFacecamDragging] = useState<boolean>(false);
+  const [facecamOverlayPosition, setFacecamOverlayPosition] = useState<string>(() => getSavedStudioPreferences().facecamOverlayPosition ?? DEFAULT_STUDIO_PREFS.facecamOverlayPosition);
+  const [facecamOverlaySize, setFacecamOverlaySize] = useState<number>(() => getSavedStudioPreferences().facecamOverlaySize ?? DEFAULT_STUDIO_PREFS.facecamOverlaySize);
+  const [facecamOverlayOpacity, setFacecamOverlayOpacity] = useState<number>(() => getSavedStudioPreferences().facecamOverlayOpacity ?? DEFAULT_STUDIO_PREFS.facecamOverlayOpacity);
+  const [facecamOverlayShape, setFacecamOverlayShape] = useState<'square' | 'circle'>(() => getSavedStudioPreferences().facecamOverlayShape ?? DEFAULT_STUDIO_PREFS.facecamOverlayShape);
+  const [facecamOverlayMirror, setFacecamOverlayMirror] = useState<boolean>(() => getSavedStudioPreferences().facecamOverlayMirror ?? DEFAULT_STUDIO_PREFS.facecamOverlayMirror);
+
+  // Voice Over (own narration audio) state
+  const [voiceoverFileName, setVoiceoverFileName] = useState<string>('');
+  const [voiceoverFilePath, setVoiceoverFilePath] = useState<string>('');
+  const [voiceoverUrl, setVoiceoverUrl] = useState<string>('');
+  const [isUploadingVoiceover, setIsUploadingVoiceover] = useState<boolean>(false);
+  const [isVoiceoverDragging, setIsVoiceoverDragging] = useState<boolean>(false);
+  const [voiceoverVolume, setVoiceoverVolume] = useState<number>(() => getSavedStudioPreferences().voiceoverVolume ?? DEFAULT_STUDIO_PREFS.voiceoverVolume);
+  const [voiceoverDelay, setVoiceoverDelay] = useState<number>(() => getSavedStudioPreferences().voiceoverDelay ?? DEFAULT_STUDIO_PREFS.voiceoverDelay);
+  const [voiceoverPitch, setVoiceoverPitch] = useState<number>(() => getSavedStudioPreferences().voiceoverPitch ?? DEFAULT_STUDIO_PREFS.voiceoverPitch);
+  const [voiceoverLoop, setVoiceoverLoop] = useState<boolean>(() => getSavedStudioPreferences().voiceoverLoop ?? DEFAULT_STUDIO_PREFS.voiceoverLoop);
+  const [isVoiceoverPlaying, setIsVoiceoverPlaying] = useState<boolean>(false);
+  const voiceoverAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [originalAudioPitch, setOriginalAudioPitch] = useState<number>(() => getSavedStudioPreferences().originalAudioPitch ?? DEFAULT_STUDIO_PREFS.originalAudioPitch);
+  const [colorBrightness, setColorBrightness] = useState<number>(() => getSavedStudioPreferences().colorBrightness ?? DEFAULT_STUDIO_PREFS.colorBrightness);
+  const [colorContrast, setColorContrast] = useState<number>(() => getSavedStudioPreferences().colorContrast ?? DEFAULT_STUDIO_PREFS.colorContrast);
+  const [colorSaturation, setColorSaturation] = useState<number>(() => getSavedStudioPreferences().colorSaturation ?? DEFAULT_STUDIO_PREFS.colorSaturation);
+  const [colorHue, setColorHue] = useState<number>(() => getSavedStudioPreferences().colorHue ?? DEFAULT_STUDIO_PREFS.colorHue);
+  const [colorTemperature, setColorTemperature] = useState<number>(() => getSavedStudioPreferences().colorTemperature ?? DEFAULT_STUDIO_PREFS.colorTemperature);
 
   // Hardware acceleration / Video Encoder state
   const [hardwareAccel, setHardwareAccel] = useState<HardwareAccelOption>(() => getSavedStudioPreferences().hardwareAccel ?? DEFAULT_STUDIO_PREFS.hardwareAccel);
@@ -953,6 +1015,102 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     }
   }, [bgmVolume]);
 
+  // Custom Facecam Overlay handlers
+  const uploadFacecamFile = async (file: File) => {
+    if (!file) return;
+    setIsUploadingFacecam(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/upload-facecam', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to upload facecam');
+      }
+      const data = await res.json();
+      setFacecamFileName(data.filename || file.name);
+      setFacecamFilePath(data.file_path);
+      setFacecamUrl(data.url);
+      setFacecamMediaType(data.media_type === 'image' ? 'image' : 'video');
+    } catch (err) {
+      console.error('Facecam upload error:', err);
+      alert('Failed to upload facecam. Please use an MP4/MOV/WebM video or a PNG/JPG/WebP image.');
+    } finally {
+      setIsUploadingFacecam(false);
+    }
+  };
+
+  const handleFacecamUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) uploadFacecamFile(file);
+    e.target.value = '';
+  };
+
+  const handleRemoveFacecam = () => {
+    setFacecamFileName('');
+    setFacecamFilePath('');
+    setFacecamUrl('');
+    setFacecamMediaType('video');
+  };
+
+  // Voice Over handlers
+  const uploadVoiceoverFile = async (file: File) => {
+    if (!file) return;
+    setIsUploadingVoiceover(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/upload-voiceover', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to upload voiceover');
+      }
+      const data = await res.json();
+      setVoiceoverFileName(data.filename || file.name);
+      setVoiceoverFilePath(data.file_path);
+      setVoiceoverUrl(data.url);
+    } catch (err) {
+      console.error('Voiceover upload error:', err);
+      alert('Failed to upload voiceover audio. Please use an MP3, WAV, M4A, AAC, OGG, or FLAC file.');
+    } finally {
+      setIsUploadingVoiceover(false);
+    }
+  };
+
+  const handleVoiceoverUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) uploadVoiceoverFile(file);
+    e.target.value = '';
+  };
+
+  const handleRemoveVoiceover = () => {
+    if (voiceoverAudioRef.current) {
+      voiceoverAudioRef.current.pause();
+    }
+    setIsVoiceoverPlaying(false);
+    setVoiceoverFileName('');
+    setVoiceoverFilePath('');
+    setVoiceoverUrl('');
+  };
+
+  const toggleVoiceoverPlayback = () => {
+    if (!voiceoverAudioRef.current) return;
+    if (isVoiceoverPlaying) {
+      voiceoverAudioRef.current.pause();
+      setIsVoiceoverPlaying(false);
+    } else {
+      voiceoverAudioRef.current.currentTime = 0;
+      voiceoverAudioRef.current.volume = Math.max(0, Math.min(1, voiceoverVolume / 100));
+      voiceoverAudioRef.current.play().then(() => setIsVoiceoverPlaying(true)).catch(console.error);
+    }
+  };
+
   // Hook SFX handlers
   const uploadHookSfxFile = async (file: File) => {
     if (!file) return;
@@ -1401,6 +1559,21 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       subtitlePositionMode,
       titleDuration,
       originalAudioVolume,
+      originalAudioPitch,
+      colorBrightness,
+      colorContrast,
+      colorSaturation,
+      colorHue,
+      colorTemperature,
+      facecamOverlayPosition,
+      facecamOverlaySize,
+      facecamOverlayOpacity,
+      facecamOverlayShape,
+      facecamOverlayMirror,
+      voiceoverVolume,
+      voiceoverDelay,
+      voiceoverPitch,
+      voiceoverLoop,
       hardwareAccel,
       titleYPercent,
       subtitleYPercent,
@@ -1438,6 +1611,21 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     subtitlePositionMode,
     titleDuration,
     originalAudioVolume,
+    originalAudioPitch,
+    colorBrightness,
+    colorContrast,
+    colorSaturation,
+    colorHue,
+    colorTemperature,
+    facecamOverlayPosition,
+    facecamOverlaySize,
+    facecamOverlayOpacity,
+    facecamOverlayShape,
+    facecamOverlayMirror,
+    voiceoverVolume,
+    voiceoverDelay,
+    voiceoverPitch,
+    voiceoverLoop,
     hardwareAccel,
     titleYPercent,
     subtitleYPercent,
@@ -1472,6 +1660,21 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     setSubtitlePositionMode(DEFAULT_STUDIO_PREFS.subtitlePositionMode);
     setTitleDuration(DEFAULT_STUDIO_PREFS.titleDuration);
     setOriginalAudioVolume(DEFAULT_STUDIO_PREFS.originalAudioVolume);
+    setOriginalAudioPitch(DEFAULT_STUDIO_PREFS.originalAudioPitch);
+    setColorBrightness(DEFAULT_STUDIO_PREFS.colorBrightness);
+    setColorContrast(DEFAULT_STUDIO_PREFS.colorContrast);
+    setColorSaturation(DEFAULT_STUDIO_PREFS.colorSaturation);
+    setColorHue(DEFAULT_STUDIO_PREFS.colorHue);
+    setColorTemperature(DEFAULT_STUDIO_PREFS.colorTemperature);
+    setFacecamOverlayPosition(DEFAULT_STUDIO_PREFS.facecamOverlayPosition);
+    setFacecamOverlaySize(DEFAULT_STUDIO_PREFS.facecamOverlaySize);
+    setFacecamOverlayOpacity(DEFAULT_STUDIO_PREFS.facecamOverlayOpacity);
+    setFacecamOverlayShape(DEFAULT_STUDIO_PREFS.facecamOverlayShape);
+    setFacecamOverlayMirror(DEFAULT_STUDIO_PREFS.facecamOverlayMirror);
+    setVoiceoverVolume(DEFAULT_STUDIO_PREFS.voiceoverVolume);
+    setVoiceoverDelay(DEFAULT_STUDIO_PREFS.voiceoverDelay);
+    setVoiceoverPitch(DEFAULT_STUDIO_PREFS.voiceoverPitch);
+    setVoiceoverLoop(DEFAULT_STUDIO_PREFS.voiceoverLoop);
     setHardwareAccel(DEFAULT_STUDIO_PREFS.hardwareAccel);
     setTitleYPercent(DEFAULT_STUDIO_PREFS.titleYPercent);
     setSubtitleYPercent(DEFAULT_STUDIO_PREFS.subtitleYPercent);
@@ -1491,6 +1694,30 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
     } catch (e) {
       console.warn('Failed to clear studio preferences from localStorage:', e);
     }
+  };
+
+  const hasColorGrade = colorBrightness !== 0 || colorContrast !== 0 || colorSaturation !== 0 || colorHue !== 0 || colorTemperature !== 0;
+  const hasServerOnlyFeatures = Boolean(
+    facecamFilePath || voiceoverFilePath || bgmFilePath || hookSfxFilePath ||
+    watermarkEnabled || (captionStyle && captionStyle !== 'none')
+  );
+
+  const applyColorPreset = (preset: 'normal' | 'cinematic' | 'vivid' | 'warm' | 'cool' | 'bw' | 'faded') => {
+    const presets = {
+      normal:    { brightness: 0,   contrast: 0,   saturation: 0,    hue: 0, temperature: 0 },
+      cinematic: { brightness: -4,  contrast: 14,  saturation: -6,   hue: 0, temperature: -6 },
+      vivid:     { brightness: 2,   contrast: 10,  saturation: 30,   hue: 0, temperature: 0 },
+      warm:      { brightness: 3,   contrast: 4,   saturation: 8,    hue: 0, temperature: 28 },
+      cool:      { brightness: 0,   contrast: 4,   saturation: 4,    hue: 0, temperature: -28 },
+      bw:        { brightness: 0,   contrast: 8,   saturation: -100, hue: 0, temperature: 0 },
+      faded:     { brightness: 6,   contrast: -16, saturation: -18,  hue: 0, temperature: 4 },
+    } as const;
+    const p = presets[preset];
+    setColorBrightness(p.brightness);
+    setColorContrast(p.contrast);
+    setColorSaturation(p.saturation);
+    setColorHue(p.hue);
+    setColorTemperature(p.temperature);
   };
 
   const handleLaunch = () => {
@@ -1557,6 +1784,32 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
       watermarkY,
       // Original Voice Audio Boost
       originalAudioVolume,
+      originalAudioPitch,
+      colorBrightness,
+      colorContrast,
+      colorSaturation,
+      colorHue,
+      colorTemperature,
+      // Custom Facecam Overlay (own camera/avatar)
+      facecamOverlayEnabled: !!facecamFilePath,
+      facecamOverlayFilePath: facecamFilePath || undefined,
+      facecamOverlayFileName: facecamFileName || undefined,
+      facecamOverlayUrl: facecamUrl || undefined,
+      facecamOverlayMediaType: facecamMediaType,
+      facecamOverlayPosition,
+      facecamOverlaySize,
+      facecamOverlayOpacity,
+      facecamOverlayShape,
+      facecamOverlayMirror,
+      // Voice Over (own narration audio)
+      voiceoverEnabled: !!voiceoverFilePath,
+      voiceoverFilePath: voiceoverFilePath || undefined,
+      voiceoverFileName: voiceoverFileName || undefined,
+      voiceoverUrl: voiceoverUrl || undefined,
+      voiceoverVolume,
+      voiceoverDelay,
+      voiceoverPitch,
+      voiceoverLoop,
       // Hardware Acceleration / Video Encoder
       hardwareAccel,
       renderEngine: hardwareAccel === 'browser_wasm' ? 'client' : 'server',
@@ -3105,7 +3358,467 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                 </div>
                 <p className="bgm-hint-text">{t.studio.rawAudioVolumeHint}</p>
               </div>
+
+              <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+                <div className="slider-label-row">
+                  <span className="slider-label">{t.studio.originalAudioPitchLabel || '🎚️ Original Voice Pitch:'}</span>
+                  <div className="slider-input-badge-wrap">
+                    <input
+                      type="number"
+                      className="slider-number-input"
+                      min={-12}
+                      max={12}
+                      step={1}
+                      value={originalAudioPitch}
+                      onChange={e => setOriginalAudioPitch(Math.max(-12, Math.min(12, Number(e.target.value) || 0)))}
+                    />
+                    <span className="slider-input-unit">st</span>
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  className="studio-slider"
+                  min="-12"
+                  max="12"
+                  step="1"
+                  value={originalAudioPitch}
+                  onChange={e => setOriginalAudioPitch(Number(e.target.value))}
+                />
+                <div className="slider-quick-buttons">
+                  <button type="button" onClick={() => setOriginalAudioPitch(-12)}>-12 (Bass)</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(-7)}>-7</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(-3)}>-3</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(0)}>0 (Normal)</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(3)}>+3</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(7)}>+7 (Chipmunk)</button>
+                  <button type="button" onClick={() => setOriginalAudioPitch(12)}>+12 (High)</button>
+                </div>
+                <p className="bgm-hint-text">{t.studio.originalAudioPitchHint || '💡 Change the voice pitch without changing the speed — perfect for making your clips unique (-12 to +12 semitones).'}</p>
+              </div>
             </div>
+          </div>
+
+          {/* 7a. Custom Facecam Overlay (user's own camera/avatar) */}
+          <div className="studio-card-group" style={!facecamFilePath ? { padding: '1rem 1.4rem' } : undefined}>
+            <div className="group-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: facecamFilePath ? '0.85rem' : 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span className="group-title" style={{ margin: 0 }}>{t.studio.facecamTitle || '🎥 Your Facecam Avatar'}</span>
+                <span className={`status-pill ${facecamFilePath ? 'pill-active' : ''}`} style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem', fontWeight: 500 }}>
+                  {facecamFilePath ? (t.studio.facecamActiveTag || 'Facecam Active') : (t.studio.facecamOptionalTag || 'Optional')}
+                </span>
+              </div>
+            </div>
+
+            {!facecamFilePath ? (
+              <label
+                className={`bgm-dropzone ${isFacecamDragging ? 'drag-over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsFacecamDragging(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsFacecamDragging(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsFacecamDragging(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) uploadFacecamFile(file);
+                }}
+              >
+                <input
+                  type="file"
+                  accept="video/*,.mp4,.mov,.mkv,.webm,.avi,.m4v,image/*,.png,.jpg,.jpeg,.webp"
+                  onChange={handleFacecamUpload}
+                  style={{ display: 'none' }}
+                  disabled={isUploadingFacecam}
+                />
+                <div className="dropzone-icon">{isUploadingFacecam ? '⏳' : isFacecamDragging ? '📥' : '🎥'}</div>
+                <div className="dropzone-text">
+                  <span className="dropzone-main-text">
+                    {isUploadingFacecam ? 'Uploading...' : isFacecamDragging ? (t.studio.facecamDropActive || 'Drop Facecam Here') : (t.studio.facecamUploadMain || 'Upload Your Camera / Avatar')}
+                  </span>
+                  <span className="dropzone-sub-text">{t.studio.facecamUploadSub || 'MP4 / MOV / WebM video or PNG / JPG image — overlaid on every clip to make your content unique'}</span>
+                </div>
+              </label>
+            ) : (
+              <>
+                <div className="bgm-active-file-row">
+                  <div className="bgm-info">
+                    <span className="bgm-icon">🎥</span>
+                    <div className="bgm-details">
+                      <span className="bgm-filename" title={facecamFileName}>{facecamFileName}</span>
+                      <span className="bgm-status-tag">{facecamMediaType === 'video' ? (t.studio.facecamTagVideo || 'Video · Looping') : (t.studio.facecamTagImage || 'Image · Static')}</span>
+                    </div>
+                  </div>
+                  <div className="bgm-actions">
+                    {facecamUrl && (
+                      <div style={{ width: '56px', height: '40px', borderRadius: '6px', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000' }}>
+                        {facecamMediaType === 'video' ? (
+                          <video src={facecamUrl} muted autoPlay loop playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        ) : (
+                          <img src={facecamUrl} alt="facecam" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        )}
+                      </div>
+                    )}
+                    <button type="button" className="bgm-remove-btn" onClick={handleRemoveFacecam} title={t.studio.facecamRemoveTooltip || 'Remove facecam'}>✕</button>
+                  </div>
+                </div>
+
+                <div className="group-content" style={{ marginTop: '0.7rem' }}>
+                  <div className="slider-control-item">
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.facecamOverlayPositionLabel || '📍 Position:'}</span>
+                    </div>
+                    <div className="streamer-presets-row" style={{ marginTop: '0.35rem' }}>
+                      {['top_left', 'top_right', 'bottom_left', 'bottom_right', 'center'].map(p => (
+                        <button
+                          key={p}
+                          type="button"
+                          className={`streamer-btn ${facecamOverlayPosition === p ? 'active' : ''}`}
+                          onClick={() => setFacecamOverlayPosition(p)}
+                          style={{ fontSize: '0.62rem', padding: '0.35rem 0.55rem' }}
+                        >
+                          {p.replace('_', ' ').toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="slider-control-item" style={{ marginTop: '0.55rem' }}>
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.facecamSizeLabel || '📏 Size:'}</span>
+                      <div className="slider-input-badge-wrap">
+                        <input
+                          type="number"
+                          className="slider-number-input"
+                          min={8}
+                          max={70}
+                          step={1}
+                          value={facecamOverlaySize}
+                          onChange={e => setFacecamOverlaySize(Math.max(8, Math.min(70, Number(e.target.value) || 25)))}
+                        />
+                        <span className="slider-input-unit">%</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      className="studio-slider"
+                      min="8"
+                      max="70"
+                      step="1"
+                      value={facecamOverlaySize}
+                      onChange={e => setFacecamOverlaySize(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="slider-control-item" style={{ marginTop: '0.55rem' }}>
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.facecamOpacityLabel || '👁️ Opacity:'}</span>
+                      <div className="slider-input-badge-wrap">
+                        <input
+                          type="number"
+                          className="slider-number-input"
+                          min={10}
+                          max={100}
+                          step={5}
+                          value={facecamOverlayOpacity}
+                          onChange={e => setFacecamOverlayOpacity(Math.max(10, Math.min(100, Number(e.target.value) || 100)))}
+                        />
+                        <span className="slider-input-unit">%</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      className="studio-slider"
+                      min="10"
+                      max="100"
+                      step="5"
+                      value={facecamOverlayOpacity}
+                      onChange={e => setFacecamOverlayOpacity(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="slider-control-item" style={{ marginTop: '0.55rem' }}>
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.facecamShapeLabel || '🔘 Shape:'}</span>
+                    </div>
+                    <div className="streamer-presets-row" style={{ marginTop: '0.35rem' }}>
+                      <button type="button" className={`streamer-btn ${facecamOverlayShape === 'square' ? 'active' : ''}`} onClick={() => setFacecamOverlayShape('square')}>{t.studio.facecamShapeSquare || 'Square'}</button>
+                      <button type="button" className={`streamer-btn ${facecamOverlayShape === 'circle' ? 'active' : ''}`} onClick={() => setFacecamOverlayShape('circle')}>{t.studio.facecamShapeCircle || 'Circle'}</button>
+                    </div>
+                    <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.6rem', fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={facecamOverlayMirror}
+                        onChange={e => setFacecamOverlayMirror(e.target.checked)}
+                        style={{ accentColor: 'var(--primary)', width: '15px', height: '15px' }}
+                      />
+                      {t.studio.facecamMirrorLabel || 'Mirror (flip horizontally, like a selfie camera)'}
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* 7a-2. Video Color Grading */}
+          <div className="studio-card-group">
+            <div className="group-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span className="group-title" style={{ margin: 0 }}>{t.studio.colorGradeTitle || '🎨 Video Color'}</span>
+                <span className={`status-pill ${hasColorGrade ? 'pill-active' : ''}`} style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem', fontWeight: 500 }}>
+                  {hasColorGrade ? (t.studio.colorGradeActiveTag || 'Active') : (t.studio.bgmOptionalBadge || 'Optional')}
+                </span>
+              </div>
+            </div>
+
+            <div className="slider-control-item">
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorPresetsLabel || '✨ Presets:'}</span>
+              </div>
+              <div className="streamer-presets-row" style={{ marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                <button type="button" className={`streamer-btn ${!hasColorGrade ? 'active' : ''}`} onClick={() => applyColorPreset('normal')}>{t.studio.colorPresetNormal || 'Normal'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('cinematic')}>{t.studio.colorPresetCinematic || 'Cinematic'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('vivid')}>{t.studio.colorPresetVivid || 'Vivid'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('warm')}>{t.studio.colorPresetWarm || 'Warm'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('cool')}>{t.studio.colorPresetCool || 'Cool'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('bw')}>{t.studio.colorPresetBW || 'B&W'}</button>
+                <button type="button" className="streamer-btn" onClick={() => applyColorPreset('faded')}>{t.studio.colorPresetFaded || 'Faded'}</button>
+              </div>
+            </div>
+
+            <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorBrightnessLabel || '☀️ Brightness:'}</span>
+                <div className="slider-input-badge-wrap">
+                  <input type="number" className="slider-number-input" min={-100} max={100} step={1} value={colorBrightness}
+                    onChange={e => setColorBrightness(Math.max(-100, Math.min(100, Number(e.target.value) || 0)))} />
+                </div>
+              </div>
+              <input type="range" className="studio-slider" min="-100" max="100" step="1" value={colorBrightness}
+                onChange={e => setColorBrightness(Number(e.target.value))} />
+            </div>
+
+            <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorContrastLabel || '◐ Contrast:'}</span>
+                <div className="slider-input-badge-wrap">
+                  <input type="number" className="slider-number-input" min={-100} max={100} step={1} value={colorContrast}
+                    onChange={e => setColorContrast(Math.max(-100, Math.min(100, Number(e.target.value) || 0)))} />
+                </div>
+              </div>
+              <input type="range" className="studio-slider" min="-100" max="100" step="1" value={colorContrast}
+                onChange={e => setColorContrast(Number(e.target.value))} />
+            </div>
+
+            <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorSaturationLabel || '🌈 Saturation:'}</span>
+                <div className="slider-input-badge-wrap">
+                  <input type="number" className="slider-number-input" min={-100} max={100} step={1} value={colorSaturation}
+                    onChange={e => setColorSaturation(Math.max(-100, Math.min(100, Number(e.target.value) || 0)))} />
+                </div>
+              </div>
+              <input type="range" className="studio-slider" min="-100" max="100" step="1" value={colorSaturation}
+                onChange={e => setColorSaturation(Number(e.target.value))} />
+              <div className="slider-quick-buttons">
+                <button type="button" onClick={() => setColorSaturation(-100)}>{t.studio.colorPresetBW || 'B&W'}</button>
+                <button type="button" onClick={() => setColorSaturation(0)}>{t.studio.colorPresetNormal || 'Normal'}</button>
+                <button type="button" onClick={() => setColorSaturation(40)}>{t.studio.colorPresetVivid || 'Vivid'}</button>
+              </div>
+            </div>
+
+            <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorHueLabel || '🎨 Hue:'}</span>
+                <div className="slider-input-badge-wrap">
+                  <input type="number" className="slider-number-input" min={-180} max={180} step={1} value={colorHue}
+                    onChange={e => setColorHue(Math.max(-180, Math.min(180, Number(e.target.value) || 0)))} />
+                  <span className="slider-input-unit">°</span>
+                </div>
+              </div>
+              <input type="range" className="studio-slider" min="-180" max="180" step="1" value={colorHue}
+                onChange={e => setColorHue(Number(e.target.value))} />
+            </div>
+
+            <div className="slider-control-item" style={{ marginTop: '0.9rem' }}>
+              <div className="slider-label-row">
+                <span className="slider-label">{t.studio.colorTemperatureLabel || '🌡️ Temperature:'}</span>
+                <div className="slider-input-badge-wrap">
+                  <input type="number" className="slider-number-input" min={-100} max={100} step={1} value={colorTemperature}
+                    onChange={e => setColorTemperature(Math.max(-100, Math.min(100, Number(e.target.value) || 0)))} />
+                </div>
+              </div>
+              <input type="range" className="studio-slider" min="-100" max="100" step="1" value={colorTemperature}
+                onChange={e => setColorTemperature(Number(e.target.value))} />
+              <div className="slider-quick-buttons">
+                <button type="button" onClick={() => setColorTemperature(-40)}>{t.studio.colorPresetCool || 'Cool'}</button>
+                <button type="button" onClick={() => setColorTemperature(0)}>{t.studio.colorPresetNormal || 'Normal'}</button>
+                <button type="button" onClick={() => setColorTemperature(40)}>{t.studio.colorPresetWarm || 'Warm'}</button>
+              </div>
+            </div>
+
+            <p className="bgm-hint-text">{t.studio.colorGradeHint || '💡 Adjust the look of your video. Color grading is burned into the final clip (subtitles and watermark keep their colors).'}</p>
+          </div>
+
+          {/* 7b. Voice Over (own narration audio) */}
+          <div className="studio-card-group" style={!voiceoverFilePath ? { padding: '1rem 1.4rem' } : undefined}>
+            <div className="group-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: voiceoverFilePath ? '0.85rem' : 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <span className="group-title" style={{ margin: 0 }}>{t.studio.voiceoverTitle || '🎙️ Voice Over'}</span>
+                <span className={`status-pill ${voiceoverFilePath ? 'pill-active' : ''}`} style={{ fontSize: '0.68rem', padding: '0.15rem 0.5rem', fontWeight: 500 }}>
+                  {voiceoverFilePath ? (t.studio.voiceoverActiveTag || 'Voice Over Active') : (t.studio.bgmOptionalBadge || 'Optional')}
+                </span>
+              </div>
+            </div>
+
+            {!voiceoverFilePath ? (
+              <label
+                className={`bgm-dropzone ${isVoiceoverDragging ? 'drag-over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsVoiceoverDragging(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsVoiceoverDragging(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsVoiceoverDragging(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) uploadVoiceoverFile(file);
+                }}
+              >
+                <input
+                  type="file"
+                  accept="audio/mp3,audio/wav,audio/m4a,audio/aac,audio/ogg,audio/flac,audio/mpeg,audio/*"
+                  onChange={handleVoiceoverUpload}
+                  style={{ display: 'none' }}
+                  disabled={isUploadingVoiceover}
+                />
+                <div className="dropzone-icon">{isUploadingVoiceover ? '⏳' : isVoiceoverDragging ? '📥' : '🎙️'}</div>
+                <div className="dropzone-text">
+                  <span className="dropzone-main-text">
+                    {isUploadingVoiceover ? 'Uploading Voice Over...' : isVoiceoverDragging ? (t.studio.voiceoverDropActive || 'Drop Voice Over Here') : (t.studio.voiceoverUploadMain || 'Upload Your Narration Audio')}
+                  </span>
+                  <span className="dropzone-sub-text">{t.studio.voiceoverUploadSub || 'MP3 / WAV / M4A / OGG — add your own narration over every clip with volume, delay & pitch control'}</span>
+                </div>
+              </label>
+            ) : (
+              <>
+                <div className="bgm-active-file-row">
+                  <div className="bgm-info">
+                    <span className="bgm-icon">🎙️</span>
+                    <div className="bgm-details">
+                      <span className="bgm-filename" title={voiceoverFileName}>{voiceoverFileName}</span>
+                      <span className="bgm-status-tag">{t.studio.voiceoverTagReady || 'Ready to mix'}</span>
+                    </div>
+                  </div>
+                  <div className="bgm-actions">
+                    <button type="button" className="bgm-preview-btn" onClick={toggleVoiceoverPlayback} title="Preview">
+                      {isVoiceoverPlaying ? '⏸' : '▶'}
+                    </button>
+                    <button type="button" className="bgm-remove-btn" onClick={handleRemoveVoiceover} title={t.studio.voiceoverRemoveTooltip || 'Remove voice over'}>✕</button>
+                  </div>
+                </div>
+
+                <div className="group-content" style={{ marginTop: '0.7rem' }}>
+                  <div className="slider-control-item">
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.voiceoverVolumeLabel || '🔊 Volume:'}</span>
+                      <div className="slider-input-badge-wrap">
+                        <input
+                          type="number"
+                          className="slider-number-input"
+                          min={0}
+                          max={200}
+                          step={5}
+                          value={voiceoverVolume}
+                          onChange={e => setVoiceoverVolume(Math.max(0, Math.min(200, Number(e.target.value) || 0)))}
+                        />
+                        <span className="slider-input-unit">%</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      className="studio-slider"
+                      min="0"
+                      max="200"
+                      step="5"
+                      value={voiceoverVolume}
+                      onChange={e => setVoiceoverVolume(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="slider-control-item" style={{ marginTop: '0.55rem' }}>
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.voiceoverDelayLabel || '⏱️ Start Delay:'}</span>
+                      <div className="slider-input-badge-wrap">
+                        <input
+                          type="number"
+                          className="slider-number-input"
+                          min={0}
+                          max={30}
+                          step={0.5}
+                          value={voiceoverDelay}
+                          onChange={e => setVoiceoverDelay(Math.max(0, Math.min(30, Number(e.target.value) || 0)))}
+                        />
+                        <span className="slider-input-unit">s</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      className="studio-slider"
+                      min="0"
+                      max="30"
+                      step="0.5"
+                      value={voiceoverDelay}
+                      onChange={e => setVoiceoverDelay(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="slider-control-item" style={{ marginTop: '0.55rem' }}>
+                    <div className="slider-label-row">
+                      <span className="slider-label">{t.studio.voiceoverPitchLabel || '🎚️ Voice Pitch:'}</span>
+                      <div className="slider-input-badge-wrap">
+                        <input
+                          type="number"
+                          className="slider-number-input"
+                          min={-12}
+                          max={12}
+                          step={1}
+                          value={voiceoverPitch}
+                          onChange={e => setVoiceoverPitch(Math.max(-12, Math.min(12, Number(e.target.value) || 0)))}
+                        />
+                        <span className="slider-input-unit">st</span>
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      className="studio-slider"
+                      min="-12"
+                      max="12"
+                      step="1"
+                      value={voiceoverPitch}
+                      onChange={e => setVoiceoverPitch(Number(e.target.value))}
+                    />
+                    <div className="slider-quick-buttons">
+                      <button type="button" onClick={() => setVoiceoverPitch(-7)}>-7 (Deeper)</button>
+                      <button type="button" onClick={() => setVoiceoverPitch(-3)}>-3</button>
+                      <button type="button" onClick={() => setVoiceoverPitch(0)}>0 (Normal)</button>
+                      <button type="button" onClick={() => setVoiceoverPitch(3)}>+3</button>
+                      <button type="button" onClick={() => setVoiceoverPitch(7)}>+7 (Chipmunk)</button>
+                      <button type="button" onClick={() => setVoiceoverPitch(12)}>+12 (High)</button>
+                    </div>
+                  </div>
+
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.8rem', fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={voiceoverLoop}
+                      onChange={e => setVoiceoverLoop(e.target.checked)}
+                      style={{ accentColor: 'var(--primary)', width: '15px', height: '15px' }}
+                    />
+                    {t.studio.voiceoverLoopLabel || 'Loop the voice over until the clip ends' }
+                  </label>
+
+                  <p className="bgm-hint-text" style={{ marginTop: '0.6rem' }}>{t.studio.voiceoverHint || '💡 The voice over is mixed together with the original sound, background music and SFX. Use pitch to make the narration sound unique.'}</p>
+                </div>
+              </>
+            )}
           </div>
 
           {/* 8. Video Watermark Branding */}
@@ -4156,6 +4869,14 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
               style={{ display: 'none' }}
             />
 
+            {/* Hidden Audio element for voice over preview */}
+            <audio
+              ref={voiceoverAudioRef}
+              src={voiceoverUrl}
+              onEnded={() => setIsVoiceoverPlaying(false)}
+              style={{ display: 'none' }}
+            />
+
             {/* External Video Player Controls (Outside preview clip, YouTube-like) */}
             <div className="studio-player-controls-card">
               {/* Timeline scrollbar like YouTube */}
@@ -4265,6 +4986,13 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                     </select>
                   </div>
                 </div>
+                {hardwareAccel === 'browser_wasm' && hasServerOnlyFeatures && (
+                  <div className="history-info-item" style={{ gridColumn: '1 / -1' }}>
+                    <p className="bgm-hint-text" style={{ margin: 0 }}>
+                      {t.studio.hwServerOnlyWarning || '⚠️ Browser Engine tidak mendukung fitur lanjutan — memakai Server Engine otomatis.'}
+                    </p>
+                  </div>
+                )}
                 <div className="history-info-item">
                   <span className="info-key">{t.studio.specAspect}</span>
                   <span className="info-val">{aspectRatio} ({backgroundStyle})</span>

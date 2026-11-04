@@ -206,6 +206,25 @@ async def render_single_batch_clip(
             hook_sfx_path=settings.hook_sfx_file_path,
             hook_sfx_volume=float((settings.hook_sfx_volume if settings.hook_sfx_volume is not None else 100.0) / 100.0),
             original_audio_volume=float((settings.original_audio_volume if settings.original_audio_volume is not None else 100.0) / 100.0),
+            original_audio_pitch=float(getattr(settings, "original_audio_pitch", None) or 0.0),
+            color_brightness=float(getattr(settings, "color_brightness", None) or 0.0),
+            color_contrast=float(getattr(settings, "color_contrast", None) or 0.0),
+            color_saturation=float(getattr(settings, "color_saturation", None) or 0.0),
+            color_hue=float(getattr(settings, "color_hue", None) or 0.0),
+            color_temperature=float(getattr(settings, "color_temperature", None) or 0.0),
+            facecam_overlay_enabled=bool(getattr(settings, "facecam_overlay_enabled", False)),
+            facecam_overlay_path=getattr(settings, "facecam_overlay_path", None),
+            facecam_overlay_position=getattr(settings, "facecam_overlay_position", None) or "bottom_right",
+            facecam_overlay_size=float(getattr(settings, "facecam_overlay_size", None) if getattr(settings, "facecam_overlay_size", None) is not None else 25.0),
+            facecam_overlay_opacity=float((getattr(settings, "facecam_overlay_opacity", None) if getattr(settings, "facecam_overlay_opacity", None) is not None else 100.0) / 100.0),
+            facecam_overlay_shape=getattr(settings, "facecam_overlay_shape", None) or "square",
+            facecam_overlay_mirror=bool(getattr(settings, "facecam_overlay_mirror", False)),
+            voiceover_enabled=bool(getattr(settings, "voiceover_enabled", False)),
+            voiceover_path=getattr(settings, "voiceover_path", None),
+            voiceover_volume=float((getattr(settings, "voiceover_volume", None) if getattr(settings, "voiceover_volume", None) is not None else 100.0) / 100.0),
+            voiceover_delay=float(getattr(settings, "voiceover_delay", None) or 0.0),
+            voiceover_pitch=float(getattr(settings, "voiceover_pitch", None) or 0.0),
+            voiceover_loop=bool(getattr(settings, "voiceover_loop", True)),
             hardware_accel=settings.hardware_accel or "auto",
             title_y_percent=settings.title_y_percent
         )
@@ -497,6 +516,25 @@ async def render_merged_batch_clips(
             hook_sfx_path=settings.hook_sfx_file_path,
             hook_sfx_volume=float((settings.hook_sfx_volume if settings.hook_sfx_volume is not None else 100.0) / 100.0),
             original_audio_volume=float((settings.original_audio_volume if settings.original_audio_volume is not None else 100.0) / 100.0),
+            original_audio_pitch=float(getattr(settings, "original_audio_pitch", None) or 0.0),
+            color_brightness=float(getattr(settings, "color_brightness", None) or 0.0),
+            color_contrast=float(getattr(settings, "color_contrast", None) or 0.0),
+            color_saturation=float(getattr(settings, "color_saturation", None) or 0.0),
+            color_hue=float(getattr(settings, "color_hue", None) or 0.0),
+            color_temperature=float(getattr(settings, "color_temperature", None) or 0.0),
+            facecam_overlay_enabled=bool(getattr(settings, "facecam_overlay_enabled", False)),
+            facecam_overlay_path=getattr(settings, "facecam_overlay_path", None),
+            facecam_overlay_position=getattr(settings, "facecam_overlay_position", None) or "bottom_right",
+            facecam_overlay_size=float(getattr(settings, "facecam_overlay_size", None) if getattr(settings, "facecam_overlay_size", None) is not None else 25.0),
+            facecam_overlay_opacity=float((getattr(settings, "facecam_overlay_opacity", None) if getattr(settings, "facecam_overlay_opacity", None) is not None else 100.0) / 100.0),
+            facecam_overlay_shape=getattr(settings, "facecam_overlay_shape", None) or "square",
+            facecam_overlay_mirror=bool(getattr(settings, "facecam_overlay_mirror", False)),
+            voiceover_enabled=bool(getattr(settings, "voiceover_enabled", False)),
+            voiceover_path=getattr(settings, "voiceover_path", None),
+            voiceover_volume=float((getattr(settings, "voiceover_volume", None) if getattr(settings, "voiceover_volume", None) is not None else 100.0) / 100.0),
+            voiceover_delay=float(getattr(settings, "voiceover_delay", None) or 0.0),
+            voiceover_pitch=float(getattr(settings, "voiceover_pitch", None) or 0.0),
+            voiceover_loop=bool(getattr(settings, "voiceover_loop", True)),
             hardware_accel=settings.hardware_accel or "auto",
             title_y_percent=settings.title_y_percent
         )
@@ -567,7 +605,44 @@ async def process_batch_rendering(batch_id: str, request: RenderBatchRequest):
         )
         batch["current_clip_index"] = 1
     else:
+        # Prefetch every clip's source segment in parallel so the (slow) network
+        # downloads overlap instead of running one after another. Rendering then
+        # reuses the cached segment via download_clip_segment().
+        try:
+            concurrency = max(1, min(8, int(os.environ.get("CHEAT_CLIP_DOWNLOAD_CONCURRENCY", "3"))))
+        except (TypeError, ValueError):
+            concurrency = 3
+        sem = asyncio.Semaphore(concurrency)
+
+        async def _prefetch_segment(i: int, clip: Dict[str, Any]):
+            start_t = float(clip.get("start_time", 0.0))
+            end_t = float(clip.get("end_time", start_t + 30.0))
+            seg_filename = f"{batch_id}_clip_{i}_raw.mp4"
+            async with sem:
+                try:
+                    await asyncio.to_thread(
+                        download_clip_segment,
+                        target_url,
+                        start_t,
+                        end_t,
+                        seg_filename,
+                        cookies_content,
+                    )
+                except Exception as exc:
+                    # Rendering will retry the download itself if the prefetch failed.
+                    logger.warning(f"Prefetch for clip {i} failed: {exc}")
+
+        prefetch_tasks = [
+            asyncio.create_task(_prefetch_segment(i, clip))
+            for i, clip in enumerate(clips)
+        ]
+
         for idx, clip in enumerate(clips):
+            # Ensure this clip's segment is downloaded before rendering it.
+            try:
+                await prefetch_tasks[idx]
+            except Exception:
+                pass
             batch["current_clip_index"] = idx
             await render_single_batch_clip(
                 batch_id=batch_id,

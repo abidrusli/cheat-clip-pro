@@ -9,7 +9,10 @@
     "dev-backend": "node scripts/start-backend.js",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "desktop:install": "npm --prefix desktop install",
+    "desktop:build": "npm --prefix desktop run dist",
+    "desktop:portable": "npm --prefix desktop run dist:portable"
   },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",

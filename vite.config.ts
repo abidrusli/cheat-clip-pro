@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     watch: {
-      ignored: ['**/dist_app/**', '**/dist_installer/**', '**/build/**', '**/venv/**']
+      ignored: ['**/dist_app/**', '**/dist_installer/**', '**/build/**', '**/venv/**', '**/desktop/**', '**/release/**']
     },
     proxy: {
       '/api': {

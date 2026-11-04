@@ -195,7 +195,7 @@ def health_check(refresh: bool = False):
     }
     return {
         "status": "ok",
-        "message": "CHEAT CLIP PRO API is active",
+        "message": "SINYALABIDNET KLIPER PRO API is active",
         "is_vercel": is_vercel,
         "is_server": is_server_environment(),
         "allow_app_updates": is_update_allowed(),
@@ -506,7 +506,7 @@ async def analyze_video(request: AnalyzeRequest):
             except Exception as e:
                 if is_mock:
                     title = "Mock YouTube Video"
-                    channel = "Cheat Clip Pro"
+                    channel = "SinyalAbidnet Kliper Pro"
                     duration = 212.0
                     heatmap = []
                     is_live = False
@@ -749,7 +749,7 @@ async def analyze_video(request: AnalyzeRequest):
                 ViralClip(title="Introductory overview of the tool", start_time=0.0,  end_time=11.0, hook_time=3.0, virality_score=72,
                           key_quotes=["Hello and welcome.", "Finds viral hotspots."],
                           transcript="Hello and welcome. It finds viral hotspots and highlights them.",
-                          title_suggestion="Meet Cheat Clip Pro AI",
+                          title_suggestion="Meet SinyalAbidnet Kliper Pro AI",
                           caption_suggestion="Say hello to your new AI co-editor. Find the absolute best parts of any video instantly.",
                           hashtag_suggestion="#cheatclippro #aiediting #growthmindset"),
             ]
@@ -766,7 +766,7 @@ async def analyze_video(request: AnalyzeRequest):
             result = AnalyzeResponse(
                 video_id=video_id, title=title, channel=channel, duration=duration or 200.0,
                 heatmap=mock_heatmap,
-                summary="Mock analysis: this video explains how CHEAT CLIP PRO works. #aitools #videoediting #productivity",
+                summary="Mock analysis: this video explains how SINYALABIDNET KLIPER PRO works. #aitools #videoediting #productivity",
                 clips=mock_clips,
                 model="Mock Gemini"
             )

@@ -175,7 +175,7 @@ async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
 
     if has_local_changes:
         logger.info("Local changes detected. Stashing before update...")
-        run_git_command(["stash", "save", "Auto-stash before Cheat Clip PRO update"], cwd=root_dir)
+        run_git_command(["stash", "save", "Auto-stash before SinyalAbidnet Kliper Pro update"], cwd=root_dir)
 
     # 3. Pull latest changes
     rc_pull, pull_out, err_pull = run_git_command(["pull", "origin", branch], cwd=root_dir, timeout=40)
@@ -226,7 +226,7 @@ async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
         "previous_commit": info["current_commit"],
         "new_commit": new_info["current_commit"],
         "updated_deps": updated_deps,
-        "message": "Cheat Clip PRO has been updated successfully. Server is restarting in background..."
+        "message": "SinyalAbidnet Kliper Pro has been updated successfully. Server is restarting in background..."
     }
 
 
@@ -242,5 +242,5 @@ async def api_restart_app(authorized: bool = Depends(verify_admin_access)):
     return {
         "success": True,
         "status": "restarting",
-        "message": "Cheat Clip PRO is restarting..."
+        "message": "SinyalAbidnet Kliper Pro is restarting..."
     }

@@ -286,7 +286,19 @@ export default function App() {
     if (!result) return;
     setIsLaunchingRender(true);
 
-    const isClientMode = settings.hardwareAccel === 'browser_wasm' || settings.renderEngine === 'client';
+    const wantsClientMode = settings.hardwareAccel === 'browser_wasm' || settings.renderEngine === 'client';
+    const hasServerOnlyFeatures = Boolean(
+      settings.facecamOverlayEnabled ||
+      settings.voiceoverEnabled ||
+      settings.bgmEnabled ||
+      settings.hookSfxEnabled ||
+      settings.watermarkEnabled ||
+      (settings.captionStyle && settings.captionStyle !== 'none')
+    );
+    const isClientMode = wantsClientMode && !hasServerOnlyFeatures;
+    if (wantsClientMode && hasServerOnlyFeatures) {
+      setToastMessage(t.studio.hwServerOnlyWarning || '⚠️ Browser Engine tidak mendukung fitur lanjutan — memakai Server Engine otomatis.', 6000);
+    }
 
     if (isClientMode) {
       try {
@@ -394,6 +406,12 @@ export default function App() {
             backgroundStyle: settings.backgroundStyle as any,
             titleText: settings.titleText,
             fileName: `${filename}.mp4`,
+            originalAudioPitch: settings.originalAudioPitch,
+            colorBrightness: settings.colorBrightness,
+            colorContrast: settings.colorContrast,
+            colorSaturation: settings.colorSaturation,
+            colorHue: settings.colorHue,
+            colorTemperature: settings.colorTemperature,
             onProgress: (pct, stage) => {
               setBatchProgress(prev => {
                 if (!prev) return prev;
@@ -494,6 +512,28 @@ export default function App() {
             hook_sfx_volume: settings.hookSfxVolume !== undefined ? settings.hookSfxVolume : 100.0,
             // Raw Voice Audio Boost
             original_audio_volume: settings.originalAudioVolume !== undefined ? settings.originalAudioVolume : 100.0,
+            original_audio_pitch: settings.originalAudioPitch !== undefined ? settings.originalAudioPitch : 0.0,
+            // Video Color Grading
+            color_brightness: settings.colorBrightness !== undefined ? settings.colorBrightness : 0.0,
+            color_contrast: settings.colorContrast !== undefined ? settings.colorContrast : 0.0,
+            color_saturation: settings.colorSaturation !== undefined ? settings.colorSaturation : 0.0,
+            color_hue: settings.colorHue !== undefined ? settings.colorHue : 0.0,
+            color_temperature: settings.colorTemperature !== undefined ? settings.colorTemperature : 0.0,
+            // Custom Facecam Overlay (user's own camera/avatar)
+            facecam_overlay_enabled: settings.facecamOverlayEnabled || false,
+            facecam_overlay_path: settings.facecamOverlayFilePath || null,
+            facecam_overlay_position: settings.facecamOverlayPosition || 'bottom_right',
+            facecam_overlay_size: settings.facecamOverlaySize !== undefined ? settings.facecamOverlaySize : 25.0,
+            facecam_overlay_opacity: settings.facecamOverlayOpacity !== undefined ? settings.facecamOverlayOpacity : 100.0,
+            facecam_overlay_shape: settings.facecamOverlayShape || 'square',
+            facecam_overlay_mirror: settings.facecamOverlayMirror || false,
+            // Voice Over (own narration audio)
+            voiceover_enabled: settings.voiceoverEnabled || false,
+            voiceover_path: settings.voiceoverFilePath || null,
+            voiceover_volume: settings.voiceoverVolume !== undefined ? settings.voiceoverVolume : 100.0,
+            voiceover_delay: settings.voiceoverDelay !== undefined ? settings.voiceoverDelay : 0.0,
+            voiceover_pitch: settings.voiceoverPitch !== undefined ? settings.voiceoverPitch : 0.0,
+            voiceover_loop: settings.voiceoverLoop !== undefined ? settings.voiceoverLoop : true,
             // Watermark
             watermark_enabled: settings.watermarkEnabled || false,
             watermark_type: settings.watermarkType || 'image',
@@ -2273,12 +2313,12 @@ Transcript:
           <span className="logo-emoji">⚡</span>
           <div>
             <div className="logo-title-row">
-              <h1 className="text-gradient logo-title">CHEAT CLIP</h1>
-              <span className="pro-badge" title="Cheat Clip Pro Edition">
+              <h1 className="text-gradient logo-title">SINYALABIDNET</h1>
+              <span className="pro-badge" title="SinyalAbidnet Kliper Pro Edition">
                 <svg className="pro-badge-icon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M5 16L3 5L8.5 10L12 4L15.5 10L21 5L19 16H5M19 19C19 19.6 18.6 20 18 20H6C5.4 20 5 19.6 5 19V17H19V19Z" />
                 </svg>
-                PRO
+                KLIPER PRO
               </span>
             </div>
             <p className="header-subtitle">{t.header.subtitle}</p>
@@ -2361,7 +2401,7 @@ Transcript:
           )}
           <LanguageSwitcher />
           <a
-            href="https://tako.id/johansa"
+            href="https://sinyalabidnet.cloud/"
             target="_blank"
             rel="noopener noreferrer"
             className="glowing-btn"

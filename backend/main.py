@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
+import sys
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,8 +86,8 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI Application
 app = FastAPI(
-    title="CHEAT CLIP PRO API",
-    description="High-performance backend API for Cheat Clip Pro auto-clipper and video studio",
+    title="SINYALABIDNET KLIPER PRO API",
+    description="High-performance backend API for SinyalAbidnet Kliper Pro auto-clipper and video studio",
     version="2.0.0",
     lifespan=lifespan
 )
@@ -138,7 +139,16 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-dist_dir = Path(__file__).resolve().parent.parent / "dist"
+# Prefer an explicit web directory (set by the desktop shell), then the frozen bundle,
+# then the classic <project_root>/dist path used by the Docker/self-hosted setup.
+_web_dir_env = os.environ.get("CHEAT_CLIP_WEB_DIR", "").strip()
+if _web_dir_env:
+    dist_dir = Path(_web_dir_env).expanduser().resolve()
+elif getattr(sys, "frozen", False):
+    dist_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "dist"
+else:
+    dist_dir = Path(__file__).resolve().parent.parent / "dist"
+
 if dist_dir.exists() and (dist_dir / "index.html").exists():
     if (dist_dir / "assets").exists():
         app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
@@ -150,12 +160,15 @@ if dist_dir.exists() and (dist_dir / "index.html").exists():
             return FileResponse(file_candidate)
         return FileResponse(dist_dir / "index.html")
     
-    logger.info("Cheat Clip PRO production frontend mounted from dist/.")
+    logger.info("SinyalAbidnet Kliper Pro production frontend mounted from dist/.")
 else:
-    logger.info("Cheat Clip PRO backend routers mounted successfully.")
+    logger.info("SinyalAbidnet Kliper Pro backend routers mounted successfully.")
 
 if __name__ == "__main__":
     import uvicorn
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run("backend.main:app", host=host, port=port, reload=True)
+    if getattr(sys, "frozen", False):
+        uvicorn.run(app, host=host, port=port, reload=False)
+    else:
+        uvicorn.run("backend.main:app", host=host, port=port, reload=True)
