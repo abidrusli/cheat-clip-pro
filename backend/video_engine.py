@@ -502,21 +502,29 @@ def is_valid_mp4(file_path: Union[str, Path]) -> bool:
     except Exception:
         return False
 
-    # Check using ffprobe if available
+    # Check using ffprobe if available. A usable video must contain both a
+    # positive duration and at least one real video stream. Audio-only or
+    # truncated downloads previously passed this check and then failed later
+    # with the confusing "Stream specifier ':v' ... matches no streams" error.
     try:
         probe_cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-show_entries", "format=duration:stream=codec_type",
+            "-of", "json",
             str(p)
         ]
         res = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=8)
         if res.returncode == 0 and res.stdout.strip():
             try:
-                dur = float(res.stdout.strip())
-                if dur > 0.05:
+                data = json.loads(res.stdout)
+                fmt_duration = float((data.get("format") or {}).get("duration") or 0.0)
+                streams = data.get("streams") or []
+                has_video = any((s or {}).get("codec_type") == "video" for s in streams)
+                if fmt_duration > 0.05 and has_video:
                     return True
-            except Exception:
+                if fmt_duration > 0.05 and not has_video:
+                    return False
+            except (TypeError, ValueError, json.JSONDecodeError):
                 return True
         err = (res.stderr or "").lower()
         if "moov atom not found" in err or "invalid data" in err:
@@ -819,7 +827,9 @@ def download_clip_segment(
             "-ss", str(start_time),
             "-to", str(end_time),
             "-i", str(local_source),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            # This is an intermediate file that is decoded and re-encoded again
+            # during the final render, so speed matters more than pristine quality.
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
             "-c:a", "aac", "-b:a", "192k",
             "-avoid_negative_ts", "make_zero",
             "-movflags", "+faststart",
@@ -860,203 +870,203 @@ def download_clip_segment(
         for use_cookies in attempts:
             mode_label = "with cookies" if use_cookies else "guest mode (without cookies)"
             base_cmd = get_yt_dlp_base_cmd(include_cookies=use_cookies, cookies_path=temp_cookies if use_cookies else None)
-        logger.info(f"Downloading HD section ({clip_duration:.1f}s) {t_start_fmt} -> {t_end_fmt} for {clean_url} ({mode_label}, timeout: {timeout_sec}s)")
+            logger.info(f"Downloading HD section ({clip_duration:.1f}s) {t_start_fmt} -> {t_end_fmt} for {clean_url} ({mode_label}, timeout: {timeout_sec}s)")
 
-        # Method 1: yt-dlp --download-sections with multi-fragment acceleration, socket timeout, & retries
-        cmd = [
-            *base_cmd,
-            "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
-            "--force-keyframes-at-cuts",
-            "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
-            "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
-            "--socket-timeout", "20",
-            "--fragment-retries", "5",
-            "--retries", "5",
-            "--file-access-retries", "3",
-            "-o", str(output_path),
-            "--merge-output-format", "mp4",
-            "--no-warnings",
-            clean_url
-        ]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
-            if res.returncode == 0 and is_valid_mp4(output_path):
-                logger.info(f"Successfully downloaded section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
-                return str(output_path)
-            # If not valid or returncode != 0, clean up any incomplete/corrupt partial file immediately
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = res.stderr[:300] if (res and res.stderr) else "empty output or invalid file (moov atom missing)"
-        except subprocess.TimeoutExpired:
-            logger.warning(f"yt-dlp download-sections timed out after {timeout_sec}s for {clean_url} ({mode_label}).")
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = f"download-sections timed out after {timeout_sec}s due to network lag"
-        except Exception as e:
-            logger.warning(f"yt-dlp download-sections failed ({e}) ({mode_label}).")
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = str(e)
-
-        # Method 2: Fallback - Extract direct stream URLs with yt-dlp and slice using FFmpeg with network reconnect
-        logger.info(f"Direct section download fallback ({last_err_snippet}), trying stream URL trimming with auto-reconnect ({mode_label})...")
-        try:
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            url_cmd = [
-                *base_cmd,
-                "--socket-timeout", "20",
-                "-g",
-                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
-                clean_url
-            ]
-            url_res = subprocess.run(url_cmd, capture_output=True, text=True, timeout=30)
-            if url_res.returncode == 0 and url_res.stdout.strip():
-                urls = url_res.stdout.strip().split("\n")
-                video_stream = urls[0]
-                audio_stream = urls[1] if len(urls) > 1 else urls[0]
-
-                trim_timeout = max(240, min(900, int(clip_duration * 4.5) + 60))
-                trim_cmd = [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-reconnect", "1",
-                    "-reconnect_at_eof", "1",
-                    "-reconnect_streamed", "1",
-                    "-reconnect_delay_max", "5",
-                    "-ss", str(start_time),
-                    "-i", video_stream,
-                    "-ss", str(start_time),
-                    "-i", audio_stream,
-                    "-t", str(clip_duration),
-                    "-map", "0:v:0", "-map", "1:a:0?",
-                    *ACTIVE_ENCODER_ARGS,
-                    "-c:a", "aac",
-                    "-b:a", "192k",
-                    "-avoid_negative_ts", "make_zero",
-                    "-movflags", "+faststart",
-                    str(output_path)
-                ]
-                trim_res = subprocess.run(trim_cmd, capture_output=True, text=True, timeout=trim_timeout)
-                if trim_res.returncode == 0 and is_valid_mp4(output_path):
-                    logger.info(f"Successfully trimmed stream URLs with FFmpeg ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
-                    return str(output_path)
-                else:
-                    if output_path.exists():
-                        try:
-                            output_path.unlink()
-                        except Exception:
-                            pass
-                    last_err_snippet = trim_res.stderr[:300] if (trim_res and trim_res.stderr) else "stream trimming failed"
-        except Exception as e:
-            logger.error(f"Fallback stream trimming failed ({mode_label}): {e}")
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = str(e)
-
-        # Method 3: Fallback - Download at 720p (vastly lower bandwidth, skips SABR/1080p throttling)
-        logger.info(f"Method 3: Attempting fast 720p fallback section download for {clean_url} ({mode_label})...")
-        try:
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            cmd_720p = [
+            # Method 1: yt-dlp --download-sections with multi-fragment acceleration, socket timeout, & retries
+            cmd = [
                 *base_cmd,
                 "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
                 "--force-keyframes-at-cuts",
-                "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
                 "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
                 "--socket-timeout", "20",
                 "--fragment-retries", "5",
                 "--retries", "5",
+                "--file-access-retries", "3",
                 "-o", str(output_path),
                 "--merge-output-format", "mp4",
                 "--no-warnings",
                 clean_url
             ]
-            timeout_720p = max(200, min(600, int(clip_duration * 4) + 60))
-            res_720p = subprocess.run(cmd_720p, capture_output=True, text=True, timeout=timeout_720p)
-            if res_720p.returncode == 0 and is_valid_mp4(output_path):
-                logger.info(f"Successfully downloaded 720p fallback section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
-                return str(output_path)
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            if res_720p and res_720p.stderr:
-                last_err_snippet = res_720p.stderr[:300]
-        except Exception as e:
-            logger.warning(f"720p fallback failed ({mode_label}): {e}")
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = str(e)
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
+                if res.returncode == 0 and is_valid_mp4(output_path):
+                    logger.info(f"Successfully downloaded section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
+                    return str(output_path)
+                # If not valid or returncode != 0, clean up any incomplete/corrupt partial file immediately
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = res.stderr[:300] if (res and res.stderr) else "empty output or invalid file (moov atom missing)"
+            except subprocess.TimeoutExpired:
+                logger.warning(f"yt-dlp download-sections timed out after {timeout_sec}s for {clean_url} ({mode_label}).")
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = f"download-sections timed out after {timeout_sec}s due to network lag"
+            except Exception as e:
+                logger.warning(f"yt-dlp download-sections failed ({e}) ({mode_label}).")
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = str(e)
 
-        # Method 4: Fallback - Download at 480p / lowest bandwidth (guaranteed to succeed on high lag)
-        logger.info(f"Method 4: Attempting low-bandwidth 480p fallback section download for {clean_url} ({mode_label})...")
-        try:
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            cmd_480p = [
-                *base_cmd,
-                "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
-                "--force-keyframes-at-cuts",
-                "-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/18/best",
-                "-N", "2",
-                "--socket-timeout", "20",
-                "--fragment-retries", "3",
-                "--retries", "3",
-                "-o", str(output_path),
-                "--merge-output-format", "mp4",
-                "--no-warnings",
-                clean_url
-            ]
-            timeout_480p = max(150, min(450, int(clip_duration * 3) + 45))
-            res_480p = subprocess.run(cmd_480p, capture_output=True, text=True, timeout=timeout_480p)
-            if res_480p.returncode == 0 and is_valid_mp4(output_path):
-                logger.info(f"Successfully downloaded 480p fallback section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
-                return str(output_path)
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            if res_480p and res_480p.stderr:
-                last_err_snippet = res_480p.stderr[:300]
-        except Exception as e:
-            logger.warning(f"480p fallback failed ({mode_label}): {e}")
-            if output_path.exists():
-                try:
-                    output_path.unlink()
-                except Exception:
-                    pass
-            last_err_snippet = str(e)
+            # Method 2: Fallback - Extract direct stream URLs with yt-dlp and slice using FFmpeg with network reconnect
+            logger.info(f"Direct section download fallback ({last_err_snippet}), trying stream URL trimming with auto-reconnect ({mode_label})...")
+            try:
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                url_cmd = [
+                    *base_cmd,
+                    "--socket-timeout", "20",
+                    "-g",
+                    "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
+                    clean_url
+                ]
+                url_res = subprocess.run(url_cmd, capture_output=True, text=True, timeout=30)
+                if url_res.returncode == 0 and url_res.stdout.strip():
+                    urls = url_res.stdout.strip().split("\n")
+                    video_stream = urls[0]
+                    audio_stream = urls[1] if len(urls) > 1 else urls[0]
 
-        # If cookies were used and failed due to reload / session error or bot block, log and proceed to guest mode
-        if use_cookies:
-            logger.warning(f"Download with cookies failed ({last_err_snippet}). Automatically attempting guest mode fallback...")
+                    trim_timeout = max(240, min(900, int(clip_duration * 4.5) + 60))
+                    trim_cmd = [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-reconnect", "1",
+                        "-reconnect_at_eof", "1",
+                        "-reconnect_streamed", "1",
+                        "-reconnect_delay_max", "5",
+                        "-ss", str(start_time),
+                        "-i", video_stream,
+                        "-ss", str(start_time),
+                        "-i", audio_stream,
+                        "-t", str(clip_duration),
+                        "-map", "0:v:0", "-map", "1:a:0?",
+                        *ACTIVE_ENCODER_ARGS,
+                        "-c:a", "aac",
+                        "-b:a", "192k",
+                        "-avoid_negative_ts", "make_zero",
+                        "-movflags", "+faststart",
+                        str(output_path)
+                    ]
+                    trim_res = subprocess.run(trim_cmd, capture_output=True, text=True, timeout=trim_timeout)
+                    if trim_res.returncode == 0 and is_valid_mp4(output_path):
+                        logger.info(f"Successfully trimmed stream URLs with FFmpeg ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
+                        return str(output_path)
+                    else:
+                        if output_path.exists():
+                            try:
+                                output_path.unlink()
+                            except Exception:
+                                pass
+                        last_err_snippet = trim_res.stderr[:300] if (trim_res and trim_res.stderr) else "stream trimming failed"
+            except Exception as e:
+                logger.error(f"Fallback stream trimming failed ({mode_label}): {e}")
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = str(e)
+
+            # Method 3: Fallback - Download at 720p (vastly lower bandwidth, skips SABR/1080p throttling)
+            logger.info(f"Method 3: Attempting fast 720p fallback section download for {clean_url} ({mode_label})...")
+            try:
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                cmd_720p = [
+                    *base_cmd,
+                    "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
+                    "--force-keyframes-at-cuts",
+                    "-f", "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+                    "-N", str(YT_DLP_CONCURRENT_FRAGMENTS),
+                    "--socket-timeout", "20",
+                    "--fragment-retries", "5",
+                    "--retries", "5",
+                    "-o", str(output_path),
+                    "--merge-output-format", "mp4",
+                    "--no-warnings",
+                    clean_url
+                ]
+                timeout_720p = max(200, min(600, int(clip_duration * 4) + 60))
+                res_720p = subprocess.run(cmd_720p, capture_output=True, text=True, timeout=timeout_720p)
+                if res_720p.returncode == 0 and is_valid_mp4(output_path):
+                    logger.info(f"Successfully downloaded 720p fallback section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
+                    return str(output_path)
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                if res_720p and res_720p.stderr:
+                    last_err_snippet = res_720p.stderr[:300]
+            except Exception as e:
+                logger.warning(f"720p fallback failed ({mode_label}): {e}")
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = str(e)
+
+            # Method 4: Fallback - Download at 480p / lowest bandwidth (guaranteed to succeed on high lag)
+            logger.info(f"Method 4: Attempting low-bandwidth 480p fallback section download for {clean_url} ({mode_label})...")
+            try:
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                cmd_480p = [
+                    *base_cmd,
+                    "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
+                    "--force-keyframes-at-cuts",
+                    "-f", "bestvideo[height<=480]+bestaudio/best[height<=480]/18/best",
+                    "-N", "2",
+                    "--socket-timeout", "20",
+                    "--fragment-retries", "3",
+                    "--retries", "3",
+                    "-o", str(output_path),
+                    "--merge-output-format", "mp4",
+                    "--no-warnings",
+                    clean_url
+                ]
+                timeout_480p = max(150, min(450, int(clip_duration * 3) + 45))
+                res_480p = subprocess.run(cmd_480p, capture_output=True, text=True, timeout=timeout_480p)
+                if res_480p.returncode == 0 and is_valid_mp4(output_path):
+                    logger.info(f"Successfully downloaded 480p fallback section ({mode_label}): {output_path} ({output_path.stat().st_size} bytes)")
+                    return str(output_path)
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                if res_480p and res_480p.stderr:
+                    last_err_snippet = res_480p.stderr[:300]
+            except Exception as e:
+                logger.warning(f"480p fallback failed ({mode_label}): {e}")
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except Exception:
+                        pass
+                last_err_snippet = str(e)
+
+            # If cookies were used and failed due to reload / session error or bot block, log and proceed to guest mode
+            if use_cookies:
+                logger.warning(f"Download with cookies failed ({last_err_snippet}). Automatically attempting guest mode fallback...")
 
     # Ensure any corrupt partial file is unlinked
     if output_path.exists():
@@ -1423,6 +1433,35 @@ def split_text_and_emojis(text: str) -> List[Tuple[str, str]]:
     if current_buf:
         segments.append((current_type, "".join(current_buf)))
     return segments
+
+
+def get_ffmpeg_fontfile(preferred: str = "Montserrat") -> Optional[str]:
+    """Returns an absolute font file for ffmpeg drawtext.
+
+    Packaged FFmpeg builds include fontconfig but no default fonts.conf on
+    Windows. Any drawtext filter that relies on ``font=`` crashes with
+    "Fontconfig error: Cannot load default config file". Passing an explicit
+    ``fontfile=`` avoids fontconfig entirely.
+    """
+    candidates = [
+        FONTS_DIR / f"{preferred}.ttf",
+        FONTS_DIR / f"{preferred}.otf",
+        FONTS_DIR / "Montserrat.ttf",
+    ]
+    candidates.extend(sorted(FONTS_DIR.glob("*.ttf")))
+    candidates.extend(sorted(FONTS_DIR.glob("*.otf")))
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return str(candidate.resolve())
+        except OSError:
+            continue
+    return None
+
+
+def escape_ffmpeg_filter_path(path: str) -> str:
+    """Escapes a Windows path for use inside an ffmpeg filter option."""
+    return str(Path(path).resolve()).replace("\\", "/").replace("'", "'\\''").replace(":", "\\:")
 
 
 def get_font(font_name: str, size: int) -> ImageFont.FreeTypeFont:
@@ -2599,13 +2638,16 @@ def detect_speaker_face_box(
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        step = max(1, total_frames // 25) if total_frames > 25 else max(1, int(fps * 0.75))
+        # 9 samples are enough to locate the speaker and cut detection time by
+        # roughly two-thirds versus the old 25-frame scan.
+        sample_count = 9
+        step = max(1, total_frames // sample_count) if total_frames > sample_count else max(1, int(fps * 0.75))
 
         detections = []
         sampled_small_frames = []
         frame_idx = 0
         checked = 0
-        while cap.isOpened() and frame_idx < total_frames and checked < 25:
+        while cap.isOpened() and frame_idx < total_frames and checked < sample_count:
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             frame_idx += step
@@ -3051,8 +3093,10 @@ def build_ffmpeg_filtergraph(
         else:
             y_pos = 80 if aspect_ratio == "16:9_landscape" else (345 if aspect_ratio == "1:1" else (480 if aspect_ratio in ["4:3", "9:16"] else 581))
         box_style = "box=0"
+        fontfile = get_ffmpeg_fontfile()
+        fontfile_opt = f"fontfile='{escape_ffmpeg_filter_path(fontfile)}':" if fontfile else ""
         title_filter = (
-            f"{current_v}drawtext=text='{clean_title}':fontsize=60:fontcolor=white:"
+            f"{current_v}drawtext={fontfile_opt}text='{clean_title}':fontsize=60:fontcolor=white:"
             f"x=(w-text_w)/2:y={y_pos}:borderw=2.5:bordercolor=black@0.8:{box_style}[v_with_title]"
         )
         filters.append(title_filter)
@@ -3241,7 +3285,9 @@ def render_clip_to_mp4(
     default_cx = 0.85 if is_streamer else 0.50
     default_cy = 0.78 if is_streamer else 0.35
     face_box = {"found": False, "cx": default_cx, "cy": default_cy, "w": 0.22, "h": 0.25}
-    if enable_face_tracking or is_streamer:
+    # Landscape 16:9 does not crop horizontally, so face tracking is pure
+    # overhead there. Skip it to make those renders noticeably faster.
+    if (enable_face_tracking or is_streamer) and aspect_ratio != "16:9_landscape":
         face_box = detect_speaker_face_box(
             video_path,
             facecam_position=facecam_position,
@@ -3325,8 +3371,10 @@ def render_clip_to_mp4(
             # Center-based positioning: text anchor is centered at (X%, Y%) coordinates on the canvas
             overlay_x_expr = f"w*{wm_x_ratio:.4f}-text_w/2"
             overlay_y_expr = f"h*{wm_y_ratio:.4f}-text_h/2"
+            fontfile = get_ffmpeg_fontfile()
+            fontfile_opt = f"fontfile='{escape_ffmpeg_filter_path(fontfile)}':" if fontfile else ""
             drawtext_cmd = (
-                f"{out_video_map}drawtext=text='{clean_text}':fontsize={wm_font_size}:"
+                f"{out_video_map}drawtext={fontfile_opt}text='{clean_text}':fontsize={wm_font_size}:"
                 f"fontcolor=white@{wm_opacity:.2f}:borderw=2:bordercolor=black@{wm_opacity:.2f}:"
                 f"x='{overlay_x_expr}':y='{overlay_y_expr}'[v_watermarked]"
             )

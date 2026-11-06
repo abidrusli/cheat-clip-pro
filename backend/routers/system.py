@@ -58,7 +58,10 @@ async def clear_temp_folder(authorized: bool = Depends(verify_admin_access)):
     from TEMP_DIR and backend/temp. Re-creates empty directories.
     PROTECTED: cookies.txt and any cookie files are strictly PRESERVED and NEVER deleted.
     """
-    if not is_update_allowed():
+    # Clear Temp is a local desktop maintenance action. It must remain available
+    # in packaged (frozen) builds even though self-update is disabled there.
+    # Only block it on real server/cloud deployments.
+    if is_server_environment():
         raise HTTPException(
             status_code=403,
             detail="Manual server-side cache clearing is disabled in server mode for safety. Background auto-cleanup manages server storage automatically."

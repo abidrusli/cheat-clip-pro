@@ -138,6 +138,9 @@ async def _save_uploaded_file_chunked(file: UploadFile, save_path: Path, max_byt
     total_written = 0
     chunk_size = 1024 * 1024  # 1 MB
     try:
+        # The uploads folder can be removed by older "Clear Temp" builds.
+        # Re-create it lazily so uploads recover without restarting the app.
+        save_path.parent.mkdir(parents=True, exist_ok=True)
         with open(save_path, "wb") as f:
             while chunk := await file.read(chunk_size):
                 total_written += len(chunk)

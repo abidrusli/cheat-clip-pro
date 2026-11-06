@@ -1027,10 +1027,10 @@ async def analyze_video(request: AnalyzeRequest):
             f"Output language: {output_lang_name} ({output_lang_code})"
         )
 
-        requested_model = (request.model or 'gemini-2.5-flash').strip()
+        requested_model = (request.model or '').strip()
         if any(dep in requested_model.lower() for dep in ['gemini-1.0', 'gemini-pro-vision']):
-            logger.info(f"Requested model '{requested_model}' is outdated. Upgrading to gemini-2.5-flash.")
-            requested_model = 'gemini-2.5-flash'
+            logger.info(f"Requested model '{requested_model}' is outdated. Selecting the newest available Flash model.")
+            requested_model = ''
 
         # Create the client early because it is also used for transcript translation.
         client = genai.Client(api_key=gemini_key, http_options=types.HttpOptions(timeout=120000))
@@ -1038,14 +1038,30 @@ async def analyze_video(request: AnalyzeRequest):
         # Discover all available Flash models for the user's API key
         discovered_flash = await asyncio.to_thread(get_flash_models_for_key, client)
 
+        # The UI can still hold an old saved model name (for example
+        # gemini-2.5-flash) that now returns 404 for new API keys. Prefer the
+        # newest model that this key can actually use instead of wasting a call.
+        if discovered_flash and (not requested_model or (
+            'flash' in requested_model.lower() and requested_model not in discovered_flash
+        )):
+            if requested_model:
+                logger.info(
+                    f"Requested model '{requested_model}' is not available for this key; "
+                    f"using {discovered_flash[0]} instead."
+                )
+            requested_model = discovered_flash[0]
+        elif not requested_model:
+            requested_model = KNOWN_FLASH_MODELS[0]
+
         # Build models_to_try (capped at top 4 to prevent prolonged delays):
         models_to_try = [requested_model]
         for fm in discovered_flash:
             if fm not in models_to_try:
                 models_to_try.append(fm)
-        for km in KNOWN_FLASH_MODELS:
-            if km not in models_to_try:
-                models_to_try.append(km)
+        if not discovered_flash:
+            for km in KNOWN_FLASH_MODELS:
+                if km not in models_to_try:
+                    models_to_try.append(km)
 
         models_to_try = models_to_try[:4]
         logger.info(f"Flash fallback chain prepared: {models_to_try}")
@@ -1221,7 +1237,9 @@ async def analyze_video(request: AnalyzeRequest):
 
         for idx, model_name in enumerate(models_to_try):
             next_model_hint = models_to_try[idx + 1] if idx + 1 < len(models_to_try) else None
-            MAX_RETRIES = 1
+            # One quick retry for transient 500/503 responses. Timeouts and
+            # quota/404 errors still fall through immediately to the next model.
+            MAX_RETRIES = 2
             MODEL_TIMEOUT_SEC = 120.0  # 120s best-practice timeout for comprehensive video analysis
             
             for attempt in range(MAX_RETRIES):

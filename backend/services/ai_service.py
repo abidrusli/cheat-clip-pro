@@ -8,7 +8,13 @@ from google import genai
 from backend.config import logger
 
 KNOWN_FLASH_MODELS = [
+    'gemini-3.8-flash',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    # Keep 2.5 inside the top-4 fallback window for older API keys whose
+    # model discovery request fails temporarily.
     'gemini-2.5-flash',
+    'gemini-3.5-flash',
     'gemini-2.5-flash-lite',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
@@ -62,9 +68,11 @@ def get_flash_models_for_key(client: genai.Client) -> List[str]:
     except Exception as e:
         logger.warning(f"Could not dynamically list models: {e}")
 
-    # Combine discovered with known flash models, preserving uniqueness
-    combined_pool = list(dict.fromkeys(discovered + KNOWN_FLASH_MODELS))
-    # Sort descending so newest versions (e.g. 2.5, 2.0, 1.5) are prioritized
+    # When discovery works, trust it. Appending old "known" names caused the
+    # first fallback attempt to be a deprecated model (e.g. gemini-2.5-flash
+    # now returns 404 for new API keys), wasting a full round-trip.
+    combined_pool = list(dict.fromkeys(discovered if discovered else KNOWN_FLASH_MODELS))
+    # Sort descending so newest versions are prioritized.
     ordered = sorted(combined_pool, key=parse_gemini_model_sort_key, reverse=True)
     # Cap to top 4 distinct models to prevent excessive fallback cycles
     return ordered[:4]
@@ -73,7 +81,11 @@ def get_flash_models_for_key(client: genai.Client) -> List[str]:
 def list_available_gemini_models(api_key: str = "") -> List[str]:
     """Fetches list of available Gemini models using the user's API key, prioritizing Flash models (newest first)."""
     default_models = [
+        'gemini-3.8-flash',
+        'gemini-3.7-flash',
+        'gemini-3.6-flash',
         'gemini-2.5-flash',
+        'gemini-3.5-flash',
         'gemini-2.5-flash-lite',
         'gemini-2.0-flash',
         'gemini-2.0-flash-lite',
@@ -115,9 +127,10 @@ def list_available_gemini_models(api_key: str = "") -> List[str]:
                     if short_name not in other_models:
                         other_models.append(short_name)
         
-        # Sort flash models by version descending (e.g. 3.7, 3.6, 3.5, 2.5, 2.0, 1.5)
+        # Sort flash models by version descending. If discovery returned real
+        # models, do not mix in deprecated fallback names.
         ordered_flash = sorted(
-            list(dict.fromkeys(flash_models + KNOWN_FLASH_MODELS)),
+            list(dict.fromkeys(flash_models if flash_models else KNOWN_FLASH_MODELS)),
             key=parse_gemini_model_sort_key,
             reverse=True
         )

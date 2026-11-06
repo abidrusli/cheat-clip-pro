@@ -333,6 +333,20 @@ to every rendered clip:
 * The grade is applied to the source video before titles/subtitles/watermarks are
   burned in, so text keeps its original color.
 
+### Reliability & speed (1.0.5)
+
+* Incomplete or corrupt source segments are retried automatically once before a
+  clip is marked as failed.
+* Packaged FFmpeg now receives an explicit `fontfile=` for every title/watermark
+  `drawtext`, avoiding the fontconfig crash that used to abort renders.
+* Face tracking samples fewer frames and is skipped for 16:9 landscape renders,
+  where no horizontal crop is needed. Hardware encoders such as Intel QSV are
+  used automatically and fall back to CPU only when necessary.
+* **Clear Temp** is available in the packaged desktop app and preserves uploaded
+  BGM, voice-over, hook SFX and fonts. Only disposable render cache is removed.
+* AI analysis uses the newest Gemini Flash model discovered for your API key, so
+  deprecated model names no longer cause an extra failed request.
+
 ### Render engines
 
 * **Server Engine** (`auto`, `nvenc`, `amf`, `qsv`, `cpu`) supports every feature:
@@ -363,7 +377,7 @@ PC/VPS that the phone can reach over Wi-Fi or the internet.
 
 ### Option A — Desktop app (easiest)
 
-1. Install/run **SinyalAbidnet Kliper Pro 1.0.4** on the PC.
+1. Install/run **SinyalAbidnet Kliper Pro 1.0.5** on the PC.
 2. Click the **📱 Mobile** button in the app header.
    * The backend restarts on `0.0.0.0` and the LAN URL is copied to the
      clipboard, e.g. `http://192.168.1.10:54321`.

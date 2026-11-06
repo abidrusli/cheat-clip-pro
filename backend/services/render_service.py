@@ -25,6 +25,52 @@ RENDER_BATCHES: Dict[str, Dict[str, Any]] = {}
 BATCH_REQUESTS: Dict[str, RenderBatchRequest] = {}
 
 
+async def _download_segment_with_retry(
+    target_url: str,
+    start_t: float,
+    end_t: float,
+    seg_filename: str,
+    cookies_content: Optional[str] = None,
+) -> str:
+    """Downloads one source segment and retries once if the result is unusable.
+
+    Network hiccups can produce an MP4 with a valid container but no video
+    stream. Retrying immediately is much faster than asking the user to click
+    Retry, and it also recovers from a corrupt prefetched cache entry.
+    """
+    last_error: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            raw_path = await asyncio.to_thread(
+                download_clip_segment,
+                target_url,
+                start_t,
+                end_t,
+                seg_filename,
+                cookies_content,
+            )
+            if raw_path and os.path.exists(raw_path) and is_valid_mp4(raw_path):
+                return raw_path
+            last_error = RuntimeError(
+                "Source video segment is incomplete or corrupted ('moov atom not found'). "
+                "Network lag interrupted the download."
+            )
+        except Exception as exc:
+            last_error = exc
+
+        # Remove the bad cache entry so the retry actually downloads again.
+        try:
+            bad_path = TEMP_DIR / seg_filename
+            if bad_path.exists():
+                bad_path.unlink()
+        except Exception:
+            pass
+        if attempt == 0:
+            logger.warning(f"Segment download attempt 1 failed for {seg_filename}; retrying once...")
+
+    raise RuntimeError(str(last_error) if last_error else "Failed to download source video segment.")
+
+
 def _resolve_thumbnail_aspect(settings: RenderSettingsModel) -> str:
     """Resolve the thumbnail canvas ratio, optionally following the clip format."""
     requested = (getattr(settings, "thumbnail_format", None) or "16:9").strip().lower()
@@ -96,20 +142,13 @@ async def render_single_batch_clip(
         end_t = float(clip.get("end_time", start_t + 30.0))
         seg_filename = f"{batch_id}_clip_{idx}_raw.mp4"
 
-        raw_path = await asyncio.to_thread(
-            download_clip_segment,
+        raw_path = await _download_segment_with_retry(
             target_url,
             start_t,
             end_t,
             seg_filename,
-            cookies_content
+            cookies_content,
         )
-
-        if not raw_path or not os.path.exists(raw_path) or not is_valid_mp4(raw_path):
-            raise RuntimeError(
-                "Source video segment is incomplete or corrupted ('moov atom not found'). "
-                "Network lag interrupted the download. Please retry rendering this clip."
-            )
 
         # 2. Transcribe & Generate Subtitles / Title (.ass)
         clip_status["status"] = "transcribing"
@@ -415,18 +454,18 @@ async def render_merged_batch_clips(
             s_t = float(seg.get("start_time", 0.0))
             e_t = float(seg.get("end_time", s_t + 30.0))
             part_filename = f"{batch_id}_part_{i}_raw.mp4"
-            p_path = await asyncio.to_thread(
-                download_clip_segment,
-                target_url,
-                s_t,
-                e_t,
-                part_filename,
-                cookies_content
-            )
-            if not p_path or not os.path.exists(p_path) or not is_valid_mp4(p_path):
-                raise RuntimeError(
-                    f"Segment #{i+1} ({s_t:.1f}s - {e_t:.1f}s) is incomplete or corrupted. Please retry rendering."
+            try:
+                p_path = await _download_segment_with_retry(
+                    target_url,
+                    s_t,
+                    e_t,
+                    part_filename,
+                    cookies_content,
                 )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Segment #{i+1} ({s_t:.1f}s - {e_t:.1f}s) is incomplete or corrupted: {exc}"
+                ) from exc
             part_paths.append(p_path)
 
         # 2. Concatenate raw video segments

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from backend.config import COOKIES_PATH, ROOT_COOKIES_PATH, TEMP_DIR, _base_dir, logger
+from backend.config import COOKIES_PATH, ROOT_COOKIES_PATH, TEMP_DIR, UPLOADS_DIR, _base_dir, logger
 
 
 def get_dir_size_and_count(dir_path) -> Tuple[int, int]:
@@ -72,6 +72,14 @@ def clear_temp_files() -> dict:
                         logger.info(f"Preserving protected cookie file: {item}")
                         continue
 
+                    # Keep user-uploaded BGM / voice-over / SFX assets. These live
+                    # under TEMP_DIR/uploads but are not disposable render cache.
+                    try:
+                        if item.resolve() == UPLOADS_DIR.resolve():
+                            continue
+                    except OSError:
+                        pass
+
                     if item.is_file() or item.is_symlink():
                         sz = item.stat().st_size
                         item.unlink()
@@ -97,8 +105,11 @@ def clear_temp_files() -> dict:
                     logger.warning(f"Could not delete temp item {item}: {e}")
         d.mkdir(parents=True, exist_ok=True)
 
-    # Ensure frames directory inside TEMP_DIR exists
+    # Ensure frames and uploads directories inside TEMP_DIR exist. Older builds
+    # deleted the uploads folder here, which made the next BGM upload fail with
+    # a missing-directory error until the backend was restarted.
     (TEMP_DIR / "frames").mkdir(parents=True, exist_ok=True)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     cleared_mb = round(cleared_bytes / (1024 * 1024), 2)
     formatted = f"{cleared_mb} MB" if cleared_mb < 1024 else f"{round(cleared_mb / 1024, 2)} GB"
@@ -165,6 +176,15 @@ def auto_cleanup_expired_files(
     target_dirs = [TEMP_DIR, base_dir / "temp", UPLOADS_DIR, EXPORTS_DIR]
     now = time.time()
     cutoff_time = now - max_age_seconds
+    uploads_root = UPLOADS_DIR.resolve()
+
+    def is_upload_asset(p: Path) -> bool:
+        """True for user-uploaded BGM / voice-over / SFX files."""
+        try:
+            p.resolve().relative_to(uploads_root)
+            return True
+        except (OSError, ValueError):
+            return False
 
     ttl_deleted_files = 0
     ttl_deleted_bytes = 0
@@ -178,6 +198,11 @@ def auto_cleanup_expired_files(
         for item in list(target.rglob("*")):
             if item.is_file() and not is_protected_system_file(item):
                 try:
+                    # Uploaded audio is a user asset, not disposable render cache.
+                    # Keep it during a long editing session; quota cleanup below
+                    # still removes the oldest uploads if storage gets too large.
+                    if is_upload_asset(item):
+                        continue
                     mtime = item.stat().st_mtime
                     if mtime < cutoff_time:
                         sz = item.stat().st_size
@@ -229,6 +254,8 @@ def auto_cleanup_expired_files(
             for item in sorted(list(target.rglob("*")), key=lambda p: len(p.parts), reverse=True):
                 if item.is_dir() and item != target and item.name != "frames" and not is_protected_system_file(item):
                     try:
+                        if item.resolve() == uploads_root:
+                            continue
                         if not any(item.iterdir()):
                             item.rmdir()
                     except Exception:

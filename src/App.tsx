@@ -81,12 +81,12 @@ export default function App() {
   // AI model selection and custom focus prompt states
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     const saved = localStorage.getItem('cheat_clip_selected_model');
-    // Auto-migrate outdated 1.0 models to gemini-2.5-flash
+    // Auto-migrate outdated 1.0 models to the newest Flash generation.
     if (saved && (saved.includes('1.0') || saved.includes('vision'))) {
-      localStorage.setItem('cheat_clip_selected_model', 'gemini-2.5-flash');
-      return 'gemini-2.5-flash';
+      localStorage.setItem('cheat_clip_selected_model', 'gemini-3.8-flash');
+      return 'gemini-3.8-flash';
     }
-    return saved || 'gemini-2.5-flash';
+    return saved || 'gemini-3.8-flash';
   });
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -841,7 +841,7 @@ export default function App() {
           if (data.models && data.models.length > 0) {
             setAvailableModels(data.models);
             if (!data.models.includes(selectedModel) || selectedModel.includes('1.5') || selectedModel.includes('1.0')) {
-              const fallback = data.models.find((m: string) => m.includes('flash')) || data.models[0] || 'gemini-2.5-flash';
+              const fallback = data.models.find((m: string) => m.includes('flash')) || data.models[0] || 'gemini-3.8-flash';
               setSelectedModel(fallback);
               localStorage.setItem('cheat_clip_selected_model', fallback);
             }
@@ -2978,11 +2978,10 @@ Transcript:
                     ))
                   ) : (
                     <>
-                      <option value="gemini-2.5-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-2.5-flash (Fast & recommended - Free tier friendly)</option>
-                      <option value="gemini-2.5-flash-lite" style={{ background: '#0d1324', color: '#fff' }}>gemini-2.5-flash-lite (Ultra-fast & lightweight)</option>
-                      <option value="gemini-2.0-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-2.0-flash (Fast & responsive)</option>
-                      <option value="gemini-2.0-flash-lite" style={{ background: '#0d1324', color: '#fff' }}>gemini-2.0-flash-lite (Lightweight flash)</option>
-                      <option value="gemini-1.5-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-1.5-flash (Fallback flash)</option>
+                      <option value="gemini-3.8-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-3.8-flash (Newest & recommended)</option>
+                      <option value="gemini-3.7-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-3.7-flash (Fast fallback)</option>
+                      <option value="gemini-3.6-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-3.6-flash (Stable fallback)</option>
+                      <option value="gemini-3.5-flash" style={{ background: '#0d1324', color: '#fff' }}>gemini-3.5-flash (Lightweight fallback)</option>
                       <option value="gemini-2.5-pro" style={{ background: '#0d1324', color: '#fff' }}>gemini-2.5-pro (Creative & complex - High quota)</option>
                     </>
                   )}

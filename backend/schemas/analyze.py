@@ -39,7 +39,7 @@ class AnalyzeRequest(BaseModel):
     url: str = Field(..., description="YouTube video URL")
     duration: str = Field("30s", description="Target clip duration: '15s', '30s', '60s', or 'auto'")
     api_key: Optional[str] = Field(None, description="Optional custom Gemini API key provided by the user")
-    model: Optional[str] = Field("gemini-2.5-flash", description="Preferred Gemini model name")
+    model: Optional[str] = Field("gemini-3.8-flash", description="Preferred Gemini model name")
     custom_prompt: Optional[str] = Field(None, description="Optional custom focus prompt for clips search")
     range_start: Optional[float] = Field(None, description="Search range start in seconds")
     range_end: Optional[float] = Field(None, description="Search range end in seconds")
