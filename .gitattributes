@@ -1,0 +1,3 @@
+# Shell scripts must keep LF endings so they run correctly on Linux VPS.
+*.sh text eol=lf
+deploy/vps/nginx/*.template text eol=lf

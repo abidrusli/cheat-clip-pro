@@ -443,6 +443,22 @@ backend. Allow port `8000` in Windows Firewall if prompted:
 netsh advfirewall firewall add rule name="SinyalAbidnet Kliper Pro" dir=in action=allow protocol=TCP localport=8000
 ```
 
+### Option C — VPS / public server (PC can be turned off)
+
+The APK can point to a VPS that runs the backend 24/7. See
+`deploy/vps/README.md` for the full guide. In short:
+
+1. Point a subdomain (for example `klip.sinyalrdm.id`) to the VPS IP.
+2. Copy `.env.example` to `.env` and fill `GEMINI_API_KEY`.
+3. Run `bash deploy/vps/deploy.sh` as root on Debian 11/12.
+4. Enter `https://klip.sinyalrdm.id` in the APK's **Ganti Server** menu and use
+   the generated access code on the login page.
+
+The deploy script sets an optional `ACCESS_TOKEN` gate, binds the backend only
+to `127.0.0.1`, puts Nginx + Let's Encrypt HTTPS in front, and raises the upload
+limit to 4 GB. A minimal VPS is 2 vCPU / 4 GB RAM / 30 GB SSD; Debian 10 and
+512 MB plans are not supported.
+
 ### Install the APK
 
 1. Copy `SinyalAbidnet-Kliper-Pro-Mobile-1.0.3.apk` to the phone.

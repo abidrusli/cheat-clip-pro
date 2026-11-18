@@ -1,0 +1,36 @@
+services:
+  kliper:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: kliper-pro-vps
+    restart: unless-stopped
+    ports:
+      # Hanya diakses lewat Nginx di VPS, bukan langsung dari internet.
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - ../../.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8000"
+      RELOAD: "0"
+      PYTHONUNBUFFERED: "1"
+      PYTHONIOENCODING: utf-8
+    volumes:
+      - kliper_temp:/app/temp
+      - kliper_uploads:/app/uploads
+      - kliper_exports:/app/exports
+      - kliper_fonts:/app/fonts
+    shm_size: 512mb
+    mem_limit: ${MEM_LIMIT:-3g}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  kliper_temp:
+  kliper_uploads:
+  kliper_exports:
+  kliper_fonts:

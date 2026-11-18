@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Masuk - SinyalAbidnet Kliper Pro</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: radial-gradient(circle at top, #1e293b, #0b1020 65%);
+      color: #e5e7eb;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+    }
+    h1 { margin: 0 0 6px; font-size: 1.35rem; }
+    p { margin: 0 0 22px; color: #94a3b8; font-size: 0.9rem; line-height: 1.5; }
+    label { display: block; font-size: 0.8rem; margin-bottom: 8px; color: #cbd5e1; }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid #475569;
+      background: #020617;
+      color: #f8fafc;
+      font-size: 1rem;
+      outline: none;
+    }
+    input:focus { border-color: #a78bfa; box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.2); }
+    button {
+      width: 100%;
+      margin-top: 16px;
+      padding: 12px;
+      border: 0;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #7c3aed, #a855f7);
+      color: white;
+      font-weight: 700;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    .error { margin-top: 14px; color: #fca5a5; font-size: 0.85rem; min-height: 1.2em; }
+    .hint { margin-top: 18px; font-size: 0.78rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>SinyalAbidnet Kliper Pro</h1>
+    <p>Masukkan kode akses yang diberikan pemilik server untuk menggunakan aplikasi ini.</p>
+    <form id="loginForm">
+      <label for="token">Kode akses</label>
+      <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Masukkan kode akses" required />
+      <button id="submit" type="submit">Masuk</button>
+      <div class="error" id="error"></div>
+    </form>
+    <div class="hint">Kode akses tidak sama dengan API key Gemini.</div>
+  </main>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const input = document.getElementById('token');
+    const button = document.getElementById('submit');
+    const errorBox = document.getElementById('error');
+    const preset = new URLSearchParams(window.location.search).get('token');
+    if (preset) input.value = preset;
+
+    async function submitToken(token) {
+      errorBox.textContent = '';
+      button.disabled = true;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        if (!res.ok) {
+          errorBox.textContent = 'Kode akses salah. Coba lagi.';
+          return;
+        }
+        window.location.replace('/');
+      } catch (e) {
+        errorBox.textContent = 'Tidak bisa menghubungi server. Periksa koneksi internet.';
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      submitToken(input.value.trim());
+    });
+
+    if (preset) submitToken(preset.trim());
+  </script>
+</body>
+</html>

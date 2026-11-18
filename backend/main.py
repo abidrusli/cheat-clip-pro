@@ -1,11 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
+import hmac
 import logging
 import os
 import sys
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
 
 # Initialize environment and configuration
 import backend.config
@@ -115,6 +117,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Optional shared-secret gate for public/VPS deployments. When ACCESS_TOKEN is
+# unset (default desktop/LAN usage) every route behaves exactly as before.
+ACCESS_TOKEN = os.environ.get("ACCESS_TOKEN", "").strip()
+AUTH_PUBLIC_PATHS = {
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/health",
+    "/login.html",
+    "/favicon.svg",
+    "/favicon.ico",
+    "/manifest.webmanifest",
+    "/sw.js",
+}
+
+if ACCESS_TOKEN:
+    @app.middleware("http")
+    async def access_token_gate(request: Request, call_next):
+        path = request.url.path
+        if path in AUTH_PUBLIC_PATHS or path.startswith("/assets/"):
+            return await call_next(request)
+
+        cookie_token = request.cookies.get("kliper_access", "")
+        if hmac.compare_digest(cookie_token, ACCESS_TOKEN):
+            return await call_next(request)
+
+        if path.startswith("/api/"):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Unauthorized", "login_url": "/login.html"},
+            )
+        return RedirectResponse(url="/login.html", status_code=302)
+
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
@@ -133,6 +167,41 @@ app.include_router(media_router)
 app.include_router(cookies_router)
 app.include_router(downloads_router)
 app.include_router(system_router)
+
+if ACCESS_TOKEN:
+    @app.post("/api/auth/login")
+    async def auth_login(request: Request):
+        """Exchange the shared secret for an HttpOnly session cookie."""
+        token = ""
+        try:
+            payload = await request.json()
+            if isinstance(payload, dict):
+                token = str(payload.get("token", "") or "")
+        except Exception:
+            pass
+        if not token:
+            token = request.query_params.get("token", "")
+
+        if not hmac.compare_digest(token, ACCESS_TOKEN):
+            raise HTTPException(status_code=401, detail="Invalid access token")
+
+        response = JSONResponse({"ok": True})
+        response.set_cookie(
+            "kliper_access",
+            token,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+            max_age=60 * 60 * 24 * 30,
+            path="/",
+        )
+        return response
+
+    @app.get("/api/auth/logout")
+    async def auth_logout():
+        response = JSONResponse({"ok": True})
+        response.delete_cookie("kliper_access", path="/")
+        return response
 
 # Mount built frontend in production container if dist/ exists
 from pathlib import Path

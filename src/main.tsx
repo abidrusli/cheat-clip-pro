@@ -14,6 +14,24 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   })
 }
 
+// On a protected VPS deployment the backend answers 401 when the shared
+// access cookie is missing/expired. Send the user to the login page instead of
+// showing a vague API error. Local/desktop usage never hits this path.
+const nativeFetch = window.fetch.bind(window)
+window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const response = await nativeFetch(input, init)
+  if (response.status === 401) {
+    let url = ''
+    if (typeof input === 'string') url = input
+    else if (input instanceof URL) url = input.toString()
+    else url = input.url
+    if (url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+      window.location.assign('/login.html')
+    }
+  }
+  return response
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <LanguageProvider>
