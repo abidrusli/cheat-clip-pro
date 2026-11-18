@@ -7,7 +7,6 @@ import { ClipTrimmerModal } from './components/ClipTrimmerModal';
 import { AppUpdateModal } from './components/AppUpdateModal';
 import { resilientFetch } from './utils/api';
 import { getStoredCookies, hasStoredCookies } from './utils/cookieUtils';
-import { extractAudioFromVideoClient } from './utils/audioExtractor';
 import { renderClipClientSide, triggerBrowserDownload } from './services/clientRenderer';
 import { useLanguage } from './locales';
 import type { AnalyzeResponse, ViralClip, RenderSettings, BatchRenderProgress } from './types';
@@ -20,11 +19,47 @@ declare global {
   }
 }
 
+function uploadVideoFileWithProgress(
+  file: File,
+  onProgress: (percent: number, uploadedBytes: number, totalBytes: number) => void
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload-video');
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.max(1, Math.min(99, Math.round((event.loaded / Math.max(1, event.total)) * 100)));
+      onProgress(pct, event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      let payload: any = {};
+      try {
+        payload = JSON.parse(xhr.responseText || '{}');
+      } catch {
+        payload = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(payload);
+      } else {
+        reject(new Error(payload.detail || `Failed to upload video (HTTP ${xhr.status})`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading the video file.'));
+    xhr.ontimeout = () => reject(new Error('The video upload timed out. Please try again.'));
+
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('original_filename', file.name);
+    xhr.send(formData);
+  });
+}
+
 export default function App() {
   const { t } = useLanguage();
   const [url, setUrl] = useState('');
   const [gdriveUrl, setGdriveUrl] = useState('');
-  const [sourceMode, setSourceMode] = useState<'youtube' | 'gdrive' | 'upload'>('youtube');
+  const [socialUrl, setSocialUrl] = useState('');
+  const [sourceMode, setSourceMode] = useState<'youtube' | 'gdrive' | 'social' | 'upload'>('youtube');
   const [uploadedVideoFile, setUploadedVideoFile] = useState<File | null>(null);
   const [uploadedVideoInfo, setUploadedVideoInfo] = useState<{
     videoId: string;
@@ -292,6 +327,18 @@ export default function App() {
     return result.clips.filter(c => !!markedClips[`${c.start_time}_${c.end_time}`]);
   }, [result?.clips, markedClips]);
 
+  const resolveCurrentSourceUrl = (): string => {
+    if (result?.video_url) return result.video_url;
+    if (sourceMode === 'gdrive' && gdriveUrl.trim()) return gdriveUrl.trim();
+    if (sourceMode === 'social' && socialUrl.trim()) return socialUrl.trim();
+    if (sourceMode === 'upload') {
+      if (uploadedVideoInfo?.videoUrl) return uploadedVideoInfo.videoUrl;
+      if (result?.video_id) return `/api/video/${result.video_id}`;
+    }
+    if (url.trim()) return url.trim();
+    return result?.video_id ? `https://www.youtube.com/watch?v=${result.video_id}` : '';
+  };
+
   const handleStartBatchRender = async (settings: RenderSettings) => {
     if (!result) return;
     setIsLaunchingRender(true);
@@ -356,13 +403,21 @@ export default function App() {
 
           // Step 1: Acquire raw video stream (0% server load, stream proxy / local blob)
           let rawSourceUrl = '';
+          const isLocalSource = Boolean(
+            result.source_type === 'upload' ||
+            result.source_type === 'gdrive' ||
+            result.source_type === 'social' ||
+            result.video_id?.startsWith('upload_') ||
+            result.video_id?.startsWith('gdrive_') ||
+            result.video_id?.startsWith('social_')
+          );
           if (sourceMode === 'upload' && uploadedVideoFile) {
             rawSourceUrl = URL.createObjectURL(uploadedVideoFile);
-          } else if (result.source_type === 'upload' || result.video_id?.startsWith('upload_') || result.video_id?.startsWith('gdrive_')) {
-            rawSourceUrl = `/api/video/${result.video_id}`;
+          } else if (isLocalSource) {
+            rawSourceUrl = result.video_url || `/api/video/${result.video_id}`;
           } else {
             const userCookies = getStoredCookies();
-            const targetUrl = result.video_url || (url.trim() ? url.trim() : `https://www.youtube.com/watch?v=${result.video_id}`);
+            const targetUrl = resolveCurrentSourceUrl();
             const rawReq = await fetch('/api/download-raw-clip', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -410,8 +465,8 @@ export default function App() {
           // Step 2: Render in client browser via WASM
           const blob = await renderClipClientSide({
             videoSourceUrl: rawSourceUrl,
-            startTime: (sourceMode === 'upload' && uploadedVideoFile) ? clip.start_time : undefined,
-            endTime: (sourceMode === 'upload' && uploadedVideoFile) ? clip.end_time : undefined,
+            startTime: isLocalSource ? clip.start_time : undefined,
+            endTime: isLocalSource ? clip.end_time : undefined,
             aspectRatio: settings.aspectRatio as any,
             backgroundStyle: settings.backgroundStyle as any,
             titleText: settings.titleText,
@@ -475,12 +530,16 @@ export default function App() {
     }
 
     try {
+      const renderSourceUrl = resolveCurrentSourceUrl();
+      if (!renderSourceUrl) {
+        throw new Error('Video source is not available. Please re-analyze the video before rendering.');
+      }
       const userCookies = getStoredCookies();
       const resp = await fetch('/api/render-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          video_url: url || `https://www.youtube.com/watch?v=${result.video_id}`,
+          video_url: renderSourceUrl,
           video_id: result.video_id,
           clips: settings.selectedClips,
           cookies: userCookies || undefined,
@@ -662,8 +721,9 @@ export default function App() {
     analyzed_at: string;
     thumbnail: string;
     url: string;
-    source_type?: 'youtube' | 'upload' | 'gdrive';
+    source_type?: 'youtube' | 'upload' | 'gdrive' | 'social';
     video_url?: string;
+    source_url?: string;
     range_suffix?: string;
     summary?: string;
     clip_titles?: string[];
@@ -939,20 +999,24 @@ export default function App() {
           const key_quotes = (data.clips || []).flatMap((c: any) => c.key_quotes || []).filter(Boolean);
 
           const isGDrive = data.source_type === 'gdrive' || video_id.startsWith('gdrive_');
+          const isSocial = data.source_type === 'social' || video_id.startsWith('social_');
           const isUpload = data.source_type === 'upload' || video_id.startsWith('upload_');
-          const sourceType: 'youtube' | 'upload' | 'gdrive' = isGDrive ? 'gdrive' : (isUpload ? 'upload' : 'youtube');
+          const sourceType: 'youtube' | 'upload' | 'gdrive' | 'social' =
+            isGDrive ? 'gdrive' : (isSocial ? 'social' : (isUpload ? 'upload' : 'youtube'));
 
           // Determine appropriate link and thumbnail
           let itemUrl = `https://www.youtube.com/watch?v=${video_id}`;
           if (isGDrive) {
             const gdriveIdMatch = video_id.match(/gdrive_([a-zA-Z0-9_-]+)/);
             const gdriveId = gdriveIdMatch ? gdriveIdMatch[1] : '';
-            itemUrl = gdriveId ? `https://drive.google.com/file/d/${gdriveId}/view` : (data.video_url || '');
+            itemUrl = data.source_url || (gdriveId ? `https://drive.google.com/file/d/${gdriveId}/view` : (data.video_url || ''));
+          } else if (isSocial) {
+            itemUrl = data.source_url || data.video_url || '';
           } else if (isUpload) {
             itemUrl = data.video_url || `/api/video/${video_id}`;
           }
 
-          const thumb = (isGDrive || isUpload)
+          const thumb = (isGDrive || isSocial || isUpload)
             ? `/api/frame/${encodeURIComponent(video_id)}?t=2`
             : `https://img.youtube.com/vi/${video_id}/mqdefault.jpg`;
 
@@ -966,6 +1030,7 @@ export default function App() {
             url: itemUrl,
             source_type: sourceType,
             video_url: data.video_url,
+            source_url: data.source_url,
             range_suffix,
             summary: data.summary || '',
             clip_titles,
@@ -995,23 +1060,35 @@ export default function App() {
       const data: AnalyzeResponse = JSON.parse(raw);
 
       const isGDrive = data.source_type === 'gdrive' || entry.source_type === 'gdrive' || entry.video_id.startsWith('gdrive_');
+      const isSocial = data.source_type === 'social' || entry.source_type === 'social' || entry.video_id.startsWith('social_');
       const isUpload = data.source_type === 'upload' || entry.source_type === 'upload' || entry.video_id.startsWith('upload_');
 
       if (isGDrive) {
         setSourceMode('gdrive');
         setUrl('');
+        setSocialUrl('');
         const gdriveIdMatch = entry.video_id.match(/gdrive_([a-zA-Z0-9_-]+)/);
         const gdriveId = gdriveIdMatch ? gdriveIdMatch[1] : '';
-        const targetGDriveUrl = (entry.url && entry.url.includes('drive.google.com'))
-          ? entry.url
-          : (gdriveId ? `https://drive.google.com/file/d/${gdriveId}/view` : entry.video_id);
+        const targetGDriveUrl = (data.source_url && data.source_url.includes('drive.google.com'))
+          ? data.source_url
+          : ((entry.url && entry.url.includes('drive.google.com'))
+            ? entry.url
+            : (gdriveId ? `https://drive.google.com/file/d/${gdriveId}/view` : entry.video_id));
         setGdriveUrl(targetGDriveUrl);
+        setUploadedVideoInfo(null);
+        setUploadedVideoFile(null);
+      } else if (isSocial) {
+        setSourceMode('social');
+        setUrl('');
+        setGdriveUrl('');
+        setSocialUrl(data.source_url || entry.source_url || entry.url || '');
         setUploadedVideoInfo(null);
         setUploadedVideoFile(null);
       } else if (isUpload) {
         setSourceMode('upload');
         setUrl('');
         setGdriveUrl('');
+        setSocialUrl('');
         setUploadedVideoInfo({
           videoId: data.video_id,
           filename: data.title || data.video_id,
@@ -1027,6 +1104,7 @@ export default function App() {
         setSourceMode('youtube');
         setUrl(entry.url || `https://www.youtube.com/watch?v=${entry.video_id}`);
         setGdriveUrl('');
+        setSocialUrl('');
         setUploadedVideoInfo(null);
         setUploadedVideoFile(null);
       }
@@ -1164,7 +1242,7 @@ export default function App() {
   };
 
   const initPlayer = (videoId: string, forceRecreate = false) => {
-    if (!videoId || videoId.startsWith('upload_') || videoId.startsWith('gdrive_')) {
+    if (!videoId || videoId.startsWith('upload_') || videoId.startsWith('gdrive_') || videoId.startsWith('social_')) {
       return;
     }
     // If player already exists and we're not forcing recreate, try to load new video
@@ -1313,6 +1391,23 @@ export default function App() {
     return /(?:drive\.google\.com|docs\.google\.com|drive\.usercontent\.google\.com)/i.test(urlStr.trim());
   };
 
+  const isSocialVideoUrl = (urlStr: string): boolean => {
+    if (!urlStr) return false;
+    const trimmed = urlStr.trim();
+    const normalized = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+      const host = new URL(normalized).hostname.toLowerCase();
+      return [
+        'facebook.com', 'fb.watch', 'fb.me',
+        'threads.com', 'threads.net',
+        'instagram.com', 'instagr.am',
+        'tiktok.com', 'twitter.com', 'x.com',
+      ].some((domain) => host === domain || host.endsWith(`.${domain}`));
+    } catch {
+      return false;
+    }
+  };
+
   const extractGoogleDriveId = (urlStr: string): string | null => {
     if (!urlStr) return null;
     const trimmed = urlStr.trim();
@@ -1367,7 +1462,13 @@ export default function App() {
     } else if (sourceMode === 'gdrive') {
       if (!gdriveUrl.trim()) return;
       if (!isGoogleDriveUrl(gdriveUrl)) {
-        setError('Please enter a valid Google Drive video sharing link (e.g. https://drive.google.com/file/d/...)');
+        setError(t.errors.invalidGdriveUrl || 'Please enter a valid Google Drive video sharing link (e.g. https://drive.google.com/file/d/...)');
+        return;
+      }
+    } else if (sourceMode === 'social') {
+      if (!socialUrl.trim()) return;
+      if (!isSocialVideoUrl(socialUrl)) {
+        setError(t.errors.invalidSocialUrl || 'Please enter a valid public Facebook, Threads, Instagram, TikTok or X video link.');
         return;
       }
     } else {
@@ -1417,7 +1518,9 @@ export default function App() {
     const outputLangSuffix = outputLanguage === 'source' ? '' : `_out_${outputLanguage}`;
 
     // Determine target video identifier
-    let targetAnalyzeUrl = sourceMode === 'gdrive' ? gdriveUrl.trim() : url.trim();
+    let targetAnalyzeUrl = sourceMode === 'gdrive'
+      ? gdriveUrl.trim()
+      : (sourceMode === 'social' ? socialUrl.trim() : url.trim());
     let videoId = extractVideoId(targetAnalyzeUrl);
 
     if (sourceMode === 'upload') {
@@ -1434,54 +1537,69 @@ export default function App() {
       if (!currentVideoInfo && uploadedVideoFile) {
         setIsUploadingVideo(true);
         setLoadingDetails(t.form.uploadingVideo);
-        setAiStage('Extracting Audio in Browser');
-        setAiDetail(`Extracting audio stream from ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
+        setAiStage('Preparing Video');
+        setAiDetail(`Preparing ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
         try {
-          const { audioFile, metadata } = await extractAudioFromVideoClient(
-            uploadedVideoFile,
-            (stage) => {
-              setAiDetail(stage);
-              setLoadingDetails(stage);
+          let upData: any = null;
+
+          // Desktop fast path: let the local backend hard-link the selected file
+          // instead of uploading a potentially multi-gigabyte video over HTTP.
+          const electronApi = (window as any).electronAPI;
+          const localPath = electronApi?.getPathForFile ? electronApi.getPathForFile(uploadedVideoFile) : '';
+          if (localPath) {
+            setAiStage('Importing Local Video');
+            setAiDetail(`Reading local video directly from disk: ${uploadedVideoFile.name}...`);
+            try {
+              const importRes = await fetch('/api/import-local-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  path: localPath,
+                  original_filename: uploadedVideoFile.name,
+                }),
+              });
+              if (importRes.ok) {
+                upData = await importRes.json();
+              } else {
+                const importErr = await importRes.json().catch(() => ({}));
+                console.warn('Local import failed, falling back to upload:', importErr.detail || importRes.status);
+              }
+            } catch (importErr) {
+              console.warn('Local import request failed, falling back to upload:', importErr);
             }
-          );
-
-          setAiStage('Uploading Speech Audio Track');
-          setAiDetail(`Uploading compressed audio track (${(audioFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
-
-          const formData = new FormData();
-          formData.append('file', audioFile);
-          formData.append('client_duration', String(metadata.duration || 0));
-          formData.append('client_width', String(metadata.width || 1920));
-          formData.append('client_height', String(metadata.height || 1080));
-          formData.append('original_filename', uploadedVideoFile.name);
-
-          const upRes = await fetch('/api/upload-video', {
-            method: 'POST',
-            body: formData,
-          });
-          if (!upRes.ok) {
-            const errJson = await upRes.json().catch(() => ({}));
-            throw new Error(errJson.detail || 'Failed to upload video audio');
           }
-          const upData = await upRes.json();
+
+          if (!upData) {
+            setAiStage('Uploading Video File');
+            setAiDetail(`Uploading ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
+            upData = await uploadVideoFileWithProgress(
+              uploadedVideoFile,
+              (pct, uploaded, total) => {
+                const detail = `Uploading ${uploadedVideoFile.name}: ${(uploaded / (1024 * 1024)).toFixed(1)} MB / ${(total / (1024 * 1024)).toFixed(1)} MB (${pct}%)`;
+                setAiDetail(detail);
+                setLoadingDetails(detail);
+              }
+            );
+          }
+
           currentVideoInfo = {
             videoId: upData.video_id,
             filename: upData.filename,
             savedName: upData.saved_name,
-            duration: upData.duration || metadata.duration,
-            videoUrl: metadata.objectUrl || upData.video_url,
+            duration: upData.duration || 0,
+            videoUrl: upData.video_url,
             filePath: upData.file_path,
-            width: upData.width || metadata.width,
-            height: upData.height || metadata.height,
+            width: upData.width || 1920,
+            height: upData.height || 1080,
           };
           setUploadedVideoInfo(currentVideoInfo);
-          setIsUploadingVideo(false);
         } catch (uploadErr: any) {
-          setIsUploadingVideo(false);
           setLoading(false);
-          setError(uploadErr.message || 'Failed to upload video file');
+          setError(uploadErr.message || 'Failed to prepare video file');
           return;
+        } finally {
+          setIsUploadingVideo(false);
         }
       }
 
@@ -1557,10 +1675,11 @@ export default function App() {
     setStepProgress({ 1: 20, 2: 0, 3: 0, 4: 0 });
     setOverallProgress(5);
     const isGDrive = isGoogleDriveUrl(targetAnalyzeUrl);
-    setAiStage(isGDrive ? 'Connecting to Google Drive' : 'Initializing Analysis Pipeline');
-    setAiDetail(sourceMode === 'upload' ? 'Inspecting local video container & audio track...' : isGDrive ? 'Connecting to Google Drive and resolving video...' : 'Connecting to YouTube and resolving media stream metadata...');
+    const isSocial = isSocialVideoUrl(targetAnalyzeUrl);
+    setAiStage(isGDrive ? 'Connecting to Google Drive' : isSocial ? 'Connecting to Social Video' : 'Initializing Analysis Pipeline');
+    setAiDetail(sourceMode === 'upload' ? 'Inspecting local video container & audio track...' : isGDrive ? 'Connecting to Google Drive and resolving video...' : isSocial ? 'Connecting to Facebook / Threads and resolving the public video...' : 'Connecting to YouTube and resolving media stream metadata...');
     setActiveProcessingModel(selectedModel);
-    setLoadingDetails(sourceMode === 'upload' ? 'Inspecting local video file...' : isGDrive ? 'Connecting to Google Drive...' : 'Connecting to YouTube...');
+    setLoadingDetails(sourceMode === 'upload' ? 'Inspecting local video file...' : isGDrive ? 'Connecting to Google Drive...' : isSocial ? 'Connecting to social video...' : 'Connecting to YouTube...');
 
     let resultData: AnalyzeResponse | null = null;
 
@@ -1764,8 +1883,10 @@ export default function App() {
       result.video_url ||
       result.source_type === 'upload' ||
       result.source_type === 'gdrive' ||
+      result.source_type === 'social' ||
       result.video_id?.startsWith('upload_') ||
-      result.video_id?.startsWith('gdrive_')
+      result.video_id?.startsWith('gdrive_') ||
+      result.video_id?.startsWith('social_')
     );
     if (isDirect) {
       if (directVideoPlayerRef.current) {
@@ -1780,7 +1901,7 @@ export default function App() {
 
   const handleDownloadRawVideo = async () => {
     if (!result || !result.video_id) return;
-    const targetUrl = result.video_url || (url.trim() ? url.trim() : (result.video_id?.startsWith('gdrive_') || result.video_id?.startsWith('upload_') ? `/api/video/${result.video_id}` : `https://www.youtube.com/watch?v=${result.video_id}`));
+    const targetUrl = resolveCurrentSourceUrl();
     setIsDownloadingRaw(true);
     setRawDownloadProgress({
       jobId: '',
@@ -1906,7 +2027,7 @@ export default function App() {
     }));
     setToastMessage(`${t.results.downloadingRawClip} "${clip.title}"`);
 
-    const targetUrl = result.video_url || (url.trim() ? url.trim() : (result.video_id?.startsWith('gdrive_') || result.video_id?.startsWith('upload_') ? `/api/video/${result.video_id}` : `https://www.youtube.com/watch?v=${result.video_id}`));
+    const targetUrl = resolveCurrentSourceUrl();
 
     try {
       const userCookies = getStoredCookies();
@@ -2570,6 +2691,38 @@ Transcript:
               {t.form.tabGdrive}
             </button>
 
+            {/* Facebook / Threads Tab */}
+            <button
+              type="button"
+              id="source-mode-social"
+              className={`source-tab-btn ${sourceMode === 'social' ? 'active' : ''}`}
+              onClick={() => {
+                setSourceMode('social');
+                setError(null);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.55rem 1.1rem',
+                borderRadius: '10px',
+                border: sourceMode === 'social' ? '1px solid rgba(236, 72, 153, 0.45)' : '1px solid rgba(255,255,255,0.08)',
+                background: sourceMode === 'social' ? 'linear-gradient(135deg, rgba(236, 72, 153, 0.2) 0%, rgba(168, 85, 247, 0.08) 100%)' : 'rgba(255,255,255,0.03)',
+                color: sourceMode === 'social' ? '#fff' : 'var(--text-secondary)',
+                cursor: 'pointer',
+                fontWeight: 600,
+                fontSize: '0.85rem',
+                transition: 'all 0.2s ease',
+                boxShadow: sourceMode === 'social' ? '0 0 15px rgba(236, 72, 153, 0.2)' : 'none'
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: '#ec4899' }}>
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              {t.form.tabSocial}
+            </button>
+
             {/* Upload Video File Tab */}
             <button
               type="button"
@@ -2689,6 +2842,52 @@ Transcript:
               </div>
               <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.3, fontWeight: 400 }}>
                 💡 {t.form.gdriveNotice}
+              </span>
+            </div>
+          )}
+
+          {/* Facebook / Threads input mode */}
+          {sourceMode === 'social' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', width: '100%' }}>
+              <label style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{t.form.socialUrlLabel}</label>
+              <div className="form-main-input-row" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                <input
+                  id="social-url-input"
+                  type="text"
+                  className="form-input"
+                  style={{ flex: 1 }}
+                  placeholder={t.form.socialUrlPlaceholder}
+                  value={socialUrl}
+                  onChange={(e) => setSocialUrl(e.target.value)}
+                  disabled={loading}
+                  required={sourceMode === 'social'}
+                />
+                <button
+                  id="analyze-social-btn"
+                  type="submit"
+                  className="glowing-btn"
+                  disabled={loading || !socialUrl.trim()}
+                  style={{ height: '48px', padding: '0 2.5rem', flexShrink: 0 }}
+                >
+                  {loading ? (
+                    <>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="spinner-icon" style={{ animation: 'spin 1s linear infinite' }}>
+                        <circle cx="12" cy="12" r="10" strokeDasharray="32" strokeDashoffset="8"></circle>
+                      </svg>
+                      {t.form.processing}
+                    </>
+                  ) : (
+                    <>
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                      </svg>
+                      {t.form.hackClips}
+                    </>
+                  )}
+                </button>
+              </div>
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.3, fontWeight: 400 }}>
+                💡 {t.form.socialNotice}
               </span>
             </div>
           )}
@@ -3619,6 +3818,16 @@ Transcript:
                               >
                                 🔗 Google Drive
                               </a>
+                            ) : entry.source_type === 'social' ? (
+                              <a
+                                href={entry.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ color: '#ec4899', textDecoration: 'none', opacity: 0.9, fontWeight: 600 }}
+                              >
+                                🔗 Facebook / Threads
+                              </a>
                             ) : entry.source_type === 'upload' ? (
                               <span style={{ color: '#3b82f6', opacity: 0.9, fontWeight: 600 }}>
                                 📁 Local Video
@@ -4042,7 +4251,7 @@ Transcript:
               <h2 style={{ fontSize: '1.25rem', lineHeight: 1.3 }}>{result.title}</h2>
 
               <div className="video-wrapper" style={{ position: 'relative' }}>
-                {(result.video_url || result.source_type === 'upload' || result.source_type === 'gdrive' || result.video_id?.startsWith('upload_') || result.video_id?.startsWith('gdrive_')) ? (
+                {(result.video_url || result.source_type === 'upload' || result.source_type === 'gdrive' || result.source_type === 'social' || result.video_id?.startsWith('upload_') || result.video_id?.startsWith('gdrive_') || result.video_id?.startsWith('social_')) ? (
                   <video
                     key={`direct-player-${result.video_id}`}
                     ref={directVideoPlayerRef}
@@ -4874,7 +5083,7 @@ Transcript:
       {/* Embedded Clip Studio Section with side inline batch progress */}
       {result && (
         <ClipStudioSection
-          videoUrl={result.video_url || url}
+          videoUrl={resolveCurrentSourceUrl()}
           videoId={result.video_id}
           allClips={result.clips}
           markedClips={markedClipsList}

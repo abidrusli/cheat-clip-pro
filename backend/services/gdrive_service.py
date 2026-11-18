@@ -62,7 +62,7 @@ def download_google_drive_video(
     # 1. Cache check: Has this Google Drive file already been downloaded?
     existing = list(UPLOADS_DIR.glob(f"gdrive_{file_id}*.*"))
     for f in existing:
-        if f.exists() and f.stat().st_size > 1024 * 1024:
+        if f.exists() and f.stat().st_size > 1024 * 1024 and is_valid_mp4(f):
             logger.info(f"Using cached Google Drive video: {f.name} ({f.stat().st_size} bytes)")
             if on_progress:
                 on_progress("Video Found in Cache", f"Using cached Google Drive video: {f.name}", 100)
@@ -105,7 +105,7 @@ def download_google_drive_video(
 
         candidates = list(UPLOADS_DIR.glob(f"*gdrive_{file_id}*.*")) + [f for f in UPLOADS_DIR.iterdir() if file_id in f.name]
         for c in candidates:
-            if c.exists() and c.stat().st_size > 1024 * 1024:
+            if c.exists() and c.stat().st_size > 1024 * 1024 and is_valid_mp4(c):
                 # Fix double .mp4.mp4 extension if present
                 if c.name.endswith(".mp4.mp4"):
                     fixed_name = c.name[:-4]
@@ -155,6 +155,21 @@ def download_google_drive_video(
                 download_url2 = f"https://docs.google.com/uc?export=download&id={file_id}&confirm=t"
                 resp = session.get(download_url2, stream=True, timeout=35)
 
+        # The confirmation page is sometimes returned with a non-HTML content
+        # type, so check the body again after following the confirm token.
+        content_type = (resp.headers.get("Content-Type") or "").lower()
+        if "text/html" in content_type:
+            page_text = resp.text
+            if re.search(r"quota|too many|can't view|permission|sign in|request access", page_text, re.I):
+                raise RuntimeError(
+                    "Google Drive refused the download. Set the file sharing to "
+                    "'Anyone with the link can view' and try again."
+                )
+            raise RuntimeError(
+                "Google Drive returned an HTML page instead of a video file. "
+                "Make sure the link points to a video and is publicly accessible."
+            )
+
         # Detect original filename if available
         disposition = resp.headers.get("Content-Disposition", "")
         if disposition:
@@ -183,14 +198,15 @@ def download_google_drive_video(
                         mb_down = downloaded / (1024 * 1024)
                         on_progress("Downloading Video", f"Downloading: {mb_down:.1f} MB...", 45)
 
-        if out_path.exists() and out_path.stat().st_size > 500 * 1024:
+        if out_path.exists() and out_path.stat().st_size > 500 * 1024 and is_valid_mp4(out_path):
             logger.info(f"Direct HTTP download completed for Google Drive video: {out_path.name} ({out_path.stat().st_size} bytes)")
             if on_progress:
                 on_progress("Download Complete", f"Google Drive video ready: {out_path.name}", 100)
             return out_path
         else:
             raise RuntimeError(
-                "The downloaded file was too small or empty. Please ensure the Google Drive file permission is set to 'Anyone with the link can view'."
+                "The downloaded file is not a valid video. Please ensure the Google Drive file "
+                "permission is set to 'Anyone with the link can view' and the file is a video."
             )
     except Exception as e:
         if out_path.exists():

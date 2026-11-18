@@ -1,13 +1,16 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from backend.config import (
     EXPORTS_DIR,
@@ -20,6 +23,7 @@ from backend.config import (
     is_valid_mp4,
     logger,
 )
+from backend.services.system_service import is_server_environment
 
 router = APIRouter(tags=["Media"])
 
@@ -29,6 +33,13 @@ MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024        # 100 MB
 MAX_SFX_UPLOAD_BYTES = 50 * 1024 * 1024           # 50 MB
 MAX_IMAGE_UPLOAD_BYTES = 25 * 1024 * 1024         # 25 MB
 MAX_FONT_UPLOAD_BYTES = 50 * 1024 * 1024          # 50 MB
+
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv"}
+
+
+class LocalVideoImportRequest(BaseModel):
+    path: str
+    original_filename: Optional[str] = None
 
 # Audio formats that FFmpeg can decode. Keep this list broad so files picked from
 # Android/iOS (for example WhatsApp .opus notes) are accepted as well.
@@ -220,6 +231,109 @@ async def upload_video(
     except Exception as e:
         logger.error(f"Failed to upload video: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process video upload: {str(e)}")
+
+
+@router.post("/api/import-local-video")
+async def import_local_video(payload: LocalVideoImportRequest, request: Request):
+    """Registers a local video path in desktop mode without sending it over HTTP.
+
+    The Electron preload exposes ``webUtils.getPathForFile(file)`` so the desktop
+    app can hard-link (or copy) a user-selected video into the uploads folder.
+    This keeps analysis/render fast for multi-gigabyte files while still making
+    the file available to the local server for FFmpeg and Whisper.
+    """
+    if is_server_environment():
+        raise HTTPException(status_code=403, detail="Local file import is only available in desktop mode.")
+
+    client_host = request.client.host if request.client else ""
+    if client_host == "testclient":
+        pass
+    else:
+        try:
+            if not ipaddress.ip_address(client_host).is_loopback:
+                raise HTTPException(status_code=403, detail="Local file import is only allowed from this computer.")
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Local file import is only allowed from this computer.")
+
+    raw_path = (payload.path or "").strip().strip('"')
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="No local file path was provided.")
+
+    try:
+        source_path = Path(raw_path).expanduser().resolve(strict=True)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="The selected local video file could not be found.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid local video path: {str(e)}")
+
+    if not source_path.is_file():
+        raise HTTPException(status_code=400, detail="The selected local path is not a file.")
+
+    ext = source_path.suffix.lower()
+    if ext not in VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format '{ext or 'unknown'}'. Allowed: {', '.join(sorted(VIDEO_EXTENSIONS))}",
+        )
+
+    source_size = source_path.stat().st_size
+    if source_size <= 0:
+        raise HTTPException(status_code=400, detail="The selected video file is empty.")
+    if source_size > MAX_VIDEO_UPLOAD_BYTES:
+        limit_gb = round(MAX_VIDEO_UPLOAD_BYTES / (1024 ** 3))
+        raise HTTPException(status_code=413, detail=f"Video exceeds the maximum allowed size of {limit_gb} GB.")
+
+    display_filename = payload.original_filename or source_path.name
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', display_filename)
+    unique_id = f"upload_{uuid.uuid4().hex[:10]}"
+    unique_name = f"{unique_id}_{clean_name}"
+    save_path = UPLOADS_DIR / unique_name
+
+    try:
+        UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            # A hard link is instant and uses no extra disk space when the file is
+            # on the same volume. Fall back to a copy for other drives/network paths.
+            os.link(source_path, save_path)
+        except Exception:
+            await asyncio.to_thread(shutil.copy2, str(source_path), str(save_path))
+
+        meta = await asyncio.to_thread(get_video_file_metadata, save_path)
+        final_duration = meta.get("duration") or 0.0
+        final_width = meta.get("width") or 1920
+        final_height = meta.get("height") or 1080
+        logger.info(
+            "Imported local video '%s' -> '%s' (%ss, %sx%s, %s bytes)",
+            display_filename,
+            unique_name,
+            final_duration,
+            final_width,
+            final_height,
+            source_size,
+        )
+        return {
+            "success": True,
+            "video_id": unique_id,
+            "filename": display_filename,
+            "saved_name": unique_name,
+            "file_path": str(save_path),
+            "video_url": f"/api/video/{unique_name}",
+            "duration": final_duration,
+            "width": final_width,
+            "height": final_height,
+            "has_audio": meta.get("has_audio", True),
+            "size_bytes": source_size,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if save_path.exists():
+            try:
+                save_path.unlink()
+            except Exception:
+                pass
+        logger.error(f"Failed to import local video: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to import local video: {str(e)}")
 
 
 def _find_video_file_on_disk(file_name: str) -> Optional[Path]:

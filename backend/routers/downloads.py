@@ -23,12 +23,12 @@ router = APIRouter(tags=["Downloads"])
 async def handle_download_raw_video(req: RawVideoDownloadRequest, background_tasks: BackgroundTasks):
     v_url = req.video_url.strip() if req.video_url else ""
     if not v_url:
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
+        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_") or req.video_id.startswith("social_")):
             v_url = f"/api/video/{req.video_id}"
         elif req.video_id:
             v_url = f"https://www.youtube.com/watch?v={req.video_id}"
     elif not v_url.startswith("http") and not v_url.startswith("/api/video/"):
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
+        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_") or req.video_id.startswith("social_")):
             v_url = f"/api/video/{req.video_id}"
         elif req.video_id:
             v_url = f"https://www.youtube.com/watch?v={req.video_id}"
@@ -72,12 +72,12 @@ async def get_raw_download_status(job_id: str):
 async def handle_download_raw_clip(req: RawClipDownloadRequest, background_tasks: BackgroundTasks):
     v_url = req.video_url.strip() if req.video_url else ""
     if not v_url:
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
+        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_") or req.video_id.startswith("social_")):
             v_url = f"/api/video/{req.video_id}"
         elif req.video_id:
             v_url = f"https://www.youtube.com/watch?v={req.video_id}"
     elif not v_url.startswith("http") and not v_url.startswith("/api/video/"):
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
+        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_") or req.video_id.startswith("social_")):
             v_url = f"/api/video/{req.video_id}"
         elif req.video_id:
             v_url = f"https://www.youtube.com/watch?v={req.video_id}"

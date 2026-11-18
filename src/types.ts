@@ -34,7 +34,8 @@ export interface AnalyzeResponse {
   transcript?: TranscriptLine[];
   model?: string;
   video_url?: string;
-  source_type?: 'youtube' | 'upload' | 'gdrive';
+  source_type?: 'youtube' | 'upload' | 'gdrive' | 'social';
+  source_url?: string;
   source_language?: string;
   output_language?: string;
 }

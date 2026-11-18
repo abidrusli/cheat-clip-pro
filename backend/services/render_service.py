@@ -721,12 +721,12 @@ async def process_batch_rendering(batch_id: str, request: RenderBatchRequest):
     # Normalize video URL for history or direct URL
     target_url = (request.video_url or "").strip()
     if not target_url:
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
+        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_") or request.video_id.startswith("social_")):
             target_url = f"/api/video/{request.video_id}"
         elif request.video_id:
             target_url = f"https://www.youtube.com/watch?v={request.video_id}"
     elif not target_url.startswith("http") and not target_url.startswith("/api/video/"):
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
+        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_") or request.video_id.startswith("social_")):
             target_url = f"/api/video/{request.video_id}"
         elif request.video_id:
             target_url = f"https://www.youtube.com/watch?v={request.video_id}"
@@ -813,12 +813,12 @@ async def process_batch_retry(batch_id: str, clip_indices: List[int]):
     settings = request.settings
     target_url = (request.video_url or "").strip()
     if not target_url:
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
+        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_") or request.video_id.startswith("social_")):
             target_url = f"/api/video/{request.video_id}"
         elif request.video_id:
             target_url = f"https://www.youtube.com/watch?v={request.video_id}"
     elif not target_url.startswith("http") and not target_url.startswith("/api/video/"):
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
+        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_") or request.video_id.startswith("social_")):
             target_url = f"/api/video/{request.video_id}"
         elif request.video_id:
             target_url = f"https://www.youtube.com/watch?v={request.video_id}"

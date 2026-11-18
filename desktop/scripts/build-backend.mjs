@@ -98,6 +98,31 @@ function copyExternalTools(python) {
   }
 }
 
+function stageWhisperModel() {
+  const modelDir = path.join(projectRoot, 'backend', 'models', 'whisper');
+  const target = path.join(modelDir, 'base.pt');
+  if (fs.existsSync(target)) {
+    console.log(`✓ Whisper model already staged: ${target}`);
+    return;
+  }
+
+  const candidates = [
+    process.env.WHISPER_MODEL_PATH,
+    path.join(process.env.USERPROFILE || '', '.cache', 'whisper', 'base.pt'),
+    path.join(process.env.LOCALAPPDATA || '', 'whisper', 'base.pt'),
+  ].filter(Boolean);
+
+  const source = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!source) {
+    console.warn('⚠ Whisper base.pt was not found locally. The desktop app will download it on first use.');
+    return;
+  }
+
+  fs.mkdirSync(modelDir, { recursive: true });
+  fs.copyFileSync(source, target);
+  console.log(`✓ Staged Whisper model: ${source} -> ${target}`);
+}
+
 function main() {
   const python = findPython();
   console.log(`▶ Using Python: ${python}`);
@@ -105,6 +130,8 @@ function main() {
   if (!fs.existsSync(specFile)) {
     throw new Error(`PyInstaller spec not found: ${specFile}`);
   }
+
+  stageWhisperModel();
 
   // Ensure PyInstaller is available in the chosen interpreter.
   const hasPyInstaller = spawnSync(python, ['-m', 'PyInstaller', '--version'], {

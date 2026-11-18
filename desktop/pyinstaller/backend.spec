@@ -23,6 +23,7 @@ hiddenimports += collect_submodules("uvicorn")
 hiddenimports += collect_submodules("yt_dlp")
 hiddenimports += collect_submodules("youtube_transcript_api")
 hiddenimports += collect_submodules("google.genai")
+hiddenimports += collect_submodules("whisper")
 hiddenimports += collect_submodules("backend")
 
 hiddenimports += [
@@ -44,14 +45,20 @@ datas = [
 ]
 datas += collect_data_files("yt_dlp")
 datas += collect_data_files("youtube_transcript_api")
+datas += collect_data_files("whisper")
 
-# Whisper / PyTorch are intentionally excluded to keep the installer small.
-# The app degrades gracefully (manual subtitles / YouTube captions still work).
+# Bundle the Whisper model when it is staged by build-backend.mjs. Keeping the
+# model out of git avoids a 145 MB binary in the repository, while the packaged
+# desktop app can still transcribe Drive, social and uploaded videos offline.
+_whisper_models = BACKEND / "models" / "whisper"
+if _whisper_models.exists():
+    datas.append((str(_whisper_models), "backend/models/whisper"))
+
+# Whisper/PyTorch are required for local (Drive/social/upload) transcription in
+# the desktop app. Keep only genuinely unused heavy packages out of the build.
 excludes = [
-    "torch",
     "torchaudio",
     "torchvision",
-    "whisper",
     "tkinter",
     "matplotlib",
     "IPython",

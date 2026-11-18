@@ -58,6 +58,9 @@ backend/exports/
 *.webm
 *.mkv
 
+# Bundled Whisper model is staged by the desktop build script (145 MB).
+backend/models/whisper/*.pt
+
 
 # Distribution / packaging
 build/

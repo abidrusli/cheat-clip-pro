@@ -38,6 +38,11 @@ from backend.services.gdrive_service import (
     download_google_drive_video,
     is_google_drive_url,
 )
+from backend.services.social_service import (
+    detect_social_platform,
+    download_social_video,
+    get_social_platform_label,
+)
 from backend.services.system_service import (
     is_server_environment,
     is_update_allowed,
@@ -417,6 +422,10 @@ async def analyze_video(request: AnalyzeRequest):
         req_clean = request.url.strip()
         is_uploaded = False
         is_gdrive = is_google_drive_url(req_clean)
+        social_platform = detect_social_platform(req_clean)
+        is_social = social_platform is not None
+        social_title = ""
+        social_channel = ""
         uploaded_file_path: Optional[Path] = None
 
         if is_gdrive:
@@ -459,6 +468,53 @@ async def analyze_video(request: AnalyzeRequest):
             except Exception as e:
                 yield _sse({"error": f"Failed to fetch video from Google Drive: {str(e)}", "status": 400})
                 return
+        elif is_social:
+            platform_label = get_social_platform_label(social_platform or "")
+            yield _sse({
+                "step": 1,
+                "step_progress": 10,
+                "overall_progress": 5,
+                "stage": f"Connecting to {platform_label}",
+                "detail": f"Resolving the public {platform_label} video link & preparing download...",
+                "message": f"Connecting to {platform_label}..."
+            })
+            loop = asyncio.get_running_loop()
+            social_queue: asyncio.Queue = asyncio.Queue()
+
+            def social_progress(stage: str, detail: str, step_pct: int = 30):
+                loop.call_soon_threadsafe(social_queue.put_nowait, {
+                    "step": 1,
+                    "step_progress": step_pct,
+                    "overall_progress": min(22, 5 + int(step_pct * 0.17)),
+                    "stage": stage,
+                    "detail": detail,
+                    "message": detail
+                })
+
+            try:
+                task = asyncio.create_task(
+                    asyncio.to_thread(download_social_video, req_clean, social_progress)
+                )
+                while not task.done():
+                    try:
+                        evt = await asyncio.wait_for(social_queue.get(), timeout=0.2)
+                        yield _sse(evt)
+                    except asyncio.TimeoutError:
+                        pass
+                while not social_queue.empty():
+                    yield _sse(social_queue.get_nowait())
+
+                social_result = await task
+                uploaded_file_path = social_result.path
+                social_title = social_result.title
+                social_channel = social_result.uploader or platform_label
+                is_uploaded = True
+            except Exception as e:
+                yield _sse({
+                    "error": f"Failed to download {platform_label} video: {str(e)}",
+                    "status": 400
+                })
+                return
         elif req_clean.startswith("upload_") or req_clean.startswith("/api/video/") or req_clean.startswith("file://") or os.path.exists(req_clean):
             is_uploaded = True
         elif (UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])).exists():
@@ -485,9 +541,9 @@ async def analyze_video(request: AnalyzeRequest):
                         return
 
             video_id = uploaded_file_path.stem
-            canonical_url = req_clean if is_gdrive else f"/api/video/{uploaded_file_path.name}"
+            canonical_url = req_clean if (is_gdrive or is_social) else f"/api/video/{uploaded_file_path.name}"
             video_url = f"/api/video/{uploaded_file_path.name}"
-            source_type = "gdrive" if is_gdrive else "upload"
+            source_type = "gdrive" if is_gdrive else ("social" if is_social else "upload")
 
             yield _sse({
                 "step": 1,
@@ -500,8 +556,11 @@ async def analyze_video(request: AnalyzeRequest):
 
             try:
                 metadata = await asyncio.to_thread(get_video_file_metadata, uploaded_file_path)
-                title = metadata.get("title") or (uploaded_file_path.stem.replace("gdrive_", "GDrive: ") if is_gdrive else uploaded_file_path.stem)
-                channel = "Google Drive" if is_gdrive else "Local Upload"
+                if is_social and social_title:
+                    title = social_title
+                else:
+                    title = metadata.get("title") or (uploaded_file_path.stem.replace("gdrive_", "GDrive: ") if is_gdrive else uploaded_file_path.stem)
+                channel = social_channel or ("Google Drive" if is_gdrive else "Local Upload")
                 duration = metadata.get("duration", 0.0)
                 is_live = False
                 live_status = "not_live"
@@ -950,7 +1009,11 @@ async def analyze_video(request: AnalyzeRequest):
                 heatmap=mock_heatmap,
                 summary="Mock analysis: this video explains how SINYALABIDNET KLIPER PRO works. #aitools #videoediting #productivity",
                 clips=mock_clips,
-                model="Mock Gemini"
+                model="Mock Gemini",
+                video_url=video_url,
+                source_type=source_type,
+                source_url=canonical_url,
+                output_language=request.output_language,
             )
             yield _sse({
                 "step": 4,
@@ -1626,6 +1689,7 @@ async def analyze_video(request: AnalyzeRequest):
             model=successful_model or requested_model,
             video_url=video_url,
             source_type=source_type,
+            source_url=canonical_url,
             source_language=lang_code,
             output_language=output_lang_code
         )

@@ -311,13 +311,35 @@ ensure_ffmpeg_in_path()
 _WHISPER_MODEL = None
 
 
+def _whisper_model_root() -> Optional[Path]:
+    """Locate a Whisper model bundled with the desktop app, if present."""
+    candidates: List[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "backend" / "models" / "whisper")
+    candidates.append(Path(__file__).resolve().parent / "models" / "whisper")
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "backend" / "models" / "whisper")
+        candidates.append(exe_dir / "_internal" / "backend" / "models" / "whisper")
+    for candidate in candidates:
+        if (candidate / "base.pt").exists():
+            return candidate
+    return None
+
+
 def get_whisper_model():
     global _WHISPER_MODEL
     if _WHISPER_MODEL is None:
         try:
             import whisper
             logger.info("Loading Whisper 'base' model for word-level timestamps...")
-            _WHISPER_MODEL = whisper.load_model("base")
+            model_root = _whisper_model_root()
+            if model_root:
+                logger.info("Using bundled Whisper model from: %s", model_root)
+                _WHISPER_MODEL = whisper.load_model("base", download_root=str(model_root))
+            else:
+                _WHISPER_MODEL = whisper.load_model("base")
         except Exception as e:
             logger.warning(f"Could not load Whisper model: {e}")
             _WHISPER_MODEL = False
@@ -809,9 +831,9 @@ def download_clip_segment(
 
         if not local_source:
             # 2. Drive ID or Upload ID match
-            match_id = re.search(r'(gdrive_[a-zA-Z0-9_-]+|upload_[a-zA-Z0-9_-]+)', clean_raw)
+            match_id = re.search(r'(gdrive_[a-zA-Z0-9_-]+|upload_[a-zA-Z0-9_-]+|social_[a-zA-Z0-9_-]+)', clean_raw)
             if match_id:
-                raw_id = match_id.group(1).replace("gdrive_", "").replace("upload_", "")
+                raw_id = match_id.group(1).replace("gdrive_", "").replace("upload_", "").replace("social_", "")
                 for f in all_local_files:
                     if raw_id in f.name:
                         local_source = f
@@ -845,8 +867,13 @@ def download_clip_segment(
                 pass
         raise RuntimeError(f"Failed to slice video clip from source '{local_source.name}': {res.stderr or 'Corrupted video stream'}")
 
-    # Guard: if it was a Google Drive or Upload request, never send to YouTube
-    if "gdrive" in clean_raw.lower() or "upload_" in clean_raw.lower() or clean_raw.startswith("/api/video/"):
+    # Guard: if it was a Google Drive, social, or Upload request, never send it to YouTube
+    if (
+        "gdrive" in clean_raw.lower()
+        or "upload_" in clean_raw.lower()
+        or "social_" in clean_raw.lower()
+        or clean_raw.startswith("/api/video/")
+    ):
         raise RuntimeError(f"Source video file not found on disk for '{clean_raw}'. Please re-analyze the video.")
 
     # Sanitize video URL for YouTube download
@@ -3672,7 +3699,7 @@ def extract_clip_frame(video_url: str, video_id: str, timestamp: float = 0.0, co
     elif (UPLOADS_DIR / f"{safe_id}.mp4").exists():
         local_source = UPLOADS_DIR / f"{safe_id}.mp4"
     else:
-        for q in [clean_vbase, safe_id, video_id, video_id.replace("gdrive_", "").replace("upload_", "")]:
+        for q in [clean_vbase, safe_id, video_id, video_id.replace("gdrive_", "").replace("upload_", "").replace("social_", "")]:
             if not q or len(q) < 3:
                 continue
             for candidate in UPLOADS_DIR.glob(f"*{q}*"):

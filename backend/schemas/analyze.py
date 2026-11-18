@@ -36,7 +36,7 @@ class TranslatedTranscript(BaseModel):
     lines: List[TranslatedLine] = Field(description="Translated subtitle lines, preserving the original line count and indices")
 
 class AnalyzeRequest(BaseModel):
-    url: str = Field(..., description="YouTube video URL")
+    url: str = Field(..., description="YouTube, Google Drive, Facebook, Threads, Instagram, TikTok, X, or local upload reference")
     duration: str = Field("30s", description="Target clip duration: '15s', '30s', '60s', or 'auto'")
     api_key: Optional[str] = Field(None, description="Optional custom Gemini API key provided by the user")
     model: Optional[str] = Field("gemini-3.8-flash", description="Preferred Gemini model name")
@@ -73,5 +73,6 @@ class AnalyzeResponse(BaseModel):
     model: Optional[str] = None
     video_url: Optional[str] = None
     source_type: Optional[str] = "youtube"
+    source_url: Optional[str] = None
     source_language: Optional[str] = None
     output_language: Optional[str] = None

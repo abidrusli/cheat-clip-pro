@@ -1,6 +1,6 @@
 # 🎬 SinyalAbidnet Kliper Pro
 
-> **AI Powered Auto Clipper — Turn long YouTube, Google Drive, and uploaded videos into viral TikToks, Shorts, and Reels with animated subtitles, face centering, and music in minutes.**
+> **AI Powered Auto Clipper — Turn long YouTube, Google Drive, Facebook, Threads, and uploaded videos into viral TikToks, Shorts, and Reels with animated subtitles, face centering, and music in minutes.**
 
 ---
 
@@ -185,9 +185,11 @@ SinyalAbidnet Kliper Pro can be packaged as a standalone Windows desktop applica
 dependencies and FFmpeg, so end users do **not** need Python, Node.js, FFmpeg,
 or yt-dlp installed.
 
-> **Note:** The desktop build excludes the Whisper/PyTorch auto-transcription
-> model to keep the installer small. YouTube captions and manually supplied
-> subtitles (`.srt` / `.txt`) still work fully.
+> **Note:** The desktop build now bundles Whisper + PyTorch so Google Drive,
+> Facebook/Threads, and uploaded videos can be transcribed locally without
+> Python installed. The installer is larger because of the bundled Whisper
+> `base` model; YouTube captions and manually supplied subtitles (`.srt` /
+> `.txt`) still work without transcription.
 
 ### Prerequisites (build machine only)
 
@@ -209,6 +211,12 @@ The installer is written to:
 ```
 desktop/release/SinyalAbidnet-Kliper-Pro-Setup-<version>.exe
 ```
+
+The desktop build stages Whisper's `base.pt` model from
+`%USERPROFILE%\.cache\whisper\base.pt` (or the path in `WHISPER_MODEL_PATH`)
+into `backend/models/whisper` before running PyInstaller. The staged model is
+git-ignored and bundled into the installer. If it is not available at build
+time, the app will download it on first transcription.
 
 ### Portable build (no installation)
 
@@ -333,11 +341,33 @@ to every rendered clip:
 * The grade is applied to the source video before titles/subtitles/watermarks are
   burned in, so text keeps its original color.
 
-### Reliability & speed (1.0.5)
+### Reliability & speed (1.0.6)
 
+* **Google Drive** analysis now returns the downloaded local video URL, so the
+  preview and Server Engine render the same file instead of trying to re-open the
+  Drive share link.
+* **Upload Video File** now keeps the original video in the uploads folder.
+  Before, only the browser-extracted audio was uploaded, which made server-side
+  rendering fail because there was no video stream to slice.
+* In the desktop app, selecting a local video uses a fast local import
+  (`webUtils.getPathForFile` + a localhost-only endpoint) that hard-links or
+  copies the file without sending multi-gigabyte data through HTTP. The browser
+  version falls back to uploading the original video with live progress.
+* Added a **Facebook / Threads** source tab. Public Facebook, Threads, Instagram,
+  TikTok and X videos are downloaded locally, transcribed with Whisper AI, and
+  analyzed with the same heatmap/clip flow. Threads uses a public-page metadata
+  extractor because `yt-dlp` does not have a Threads extractor yet.
+* Google Drive downloads are now validated as real video files (not HTML login
+  or permission pages) before analysis starts.
+* The desktop build now bundles Whisper + PyTorch and the `base` model, so
+  Drive, Facebook/Threads, and uploaded videos can actually be transcribed
+  locally in the packaged app. Earlier installers excluded Whisper, which is
+  why those sources could not be analyzed.
+* The render request now uses `result.video_url` first, fixing the old bug where
+  Drive/upload renders fell back to an empty or YouTube URL.
 * Incomplete or corrupt source segments are retried automatically once before a
   clip is marked as failed.
-* Packaged FFmpeg now receives an explicit `fontfile=` for every title/watermark
+* Packaged FFmpeg receives an explicit `fontfile=` for every title/watermark
   `drawtext`, avoiding the fontconfig crash that used to abort renders.
 * Face tracking samples fewer frames and is skipped for 16:9 landscape renders,
   where no horizontal crop is needed. Hardware encoders such as Intel QSV are
@@ -377,7 +407,7 @@ PC/VPS that the phone can reach over Wi-Fi or the internet.
 
 ### Option A — Desktop app (easiest)
 
-1. Install/run **SinyalAbidnet Kliper Pro 1.0.5** on the PC.
+1. Install/run **SinyalAbidnet Kliper Pro 1.0.6** on the PC.
 2. Click the **📱 Mobile** button in the app header.
    * The backend restarts on `0.0.0.0` and the LAN URL is copied to the
      clipboard, e.g. `http://192.168.1.10:54321`.

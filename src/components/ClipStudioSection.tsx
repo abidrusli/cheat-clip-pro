@@ -694,7 +694,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
   const initPreviewPlayer = () => {
     if (!videoId && !videoUrl) return;
 
-    const isDirect = Boolean(videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_')));
+    const isDirect = Boolean(videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_') || videoId?.startsWith('social_')));
     if (isDirect) {
       setPlayerReady(true);
       setCurrentTime(clipStart);
@@ -4701,7 +4701,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
               >
                 {backgroundStyle === 'blurred' && aspectRatio !== '9:16' && aspectRatio !== '16:9_landscape' && (
                   <div className="ambient-blur-backdrop" style={{ overflow: 'hidden' }}>
-                    {videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_')) ? (
+                    {videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_') || videoId?.startsWith('social_')) ? (
                       <video
                         ref={ambientVideoRef}
                         src={videoUrl}
@@ -4772,7 +4772,7 @@ export const ClipStudioSection: React.FC<ClipStudioSectionProps> = ({
                   <div className={`wireframe-content-box aspect-${aspectRatio.replace(':', '').replace('_', '')} ${streamerPreset === 'split_top_cam' ? 'split-mode' : ''}`}>
                     <div className="wireframe-content-inner">
                       {/* HTML5 or YouTube Player slot - ALWAYS STABLY MOUNTED */}
-                      {videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_')) ? (
+                      {videoUrl && (videoUrl.endsWith('.mp4') || videoUrl.endsWith('.webm') || videoUrl.endsWith('.mov') || videoUrl.endsWith('.mkv') || videoUrl.includes('/api/video') || videoUrl.startsWith('blob:') || videoId?.startsWith('upload_') || videoId?.startsWith('gdrive_') || videoId?.startsWith('social_')) ? (
                         <video
                           ref={directVideoRef}
                           src={videoUrl}
