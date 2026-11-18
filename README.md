@@ -212,11 +212,12 @@ The installer is written to:
 desktop/release/SinyalAbidnet-Kliper-Pro-Setup-<version>.exe
 ```
 
-The desktop build stages Whisper's `base.pt` model from
-`%USERPROFILE%\.cache\whisper\base.pt` (or the path in `WHISPER_MODEL_PATH`)
-into `backend/models/whisper` before running PyInstaller. The staged model is
-git-ignored and bundled into the installer. If it is not available at build
-time, the app will download it on first transcription.
+The build script downloads and caches the small FFmpeg **essentials** package
+(~100 MB per binary, still with libass subtitles and hardware encoders) plus a
+whisper.cpp BLAS build and `ggml-base-q8_0.bin`. These are copied next to the
+frozen backend after PyInstaller runs. PyTorch and `openai-whisper` are
+excluded from the bundle, so the backend stays lean and starts quickly. The
+cached downloads live in `desktop/pyinstaller/tools/` and are git-ignored.
 
 ### Portable build (no installation)
 
@@ -343,6 +344,12 @@ to every rendered clip:
 
 ### Reliability & speed (1.0.6)
 
+* **Performance rebuild (same 1.0.6):** the frozen backend dropped from about
+  **1.34 GB to 589 MB**, the NSIS installer from **562 MB to 334 MB**, the
+  portable EXE from **562 MB to 310 MB**, and the portable ZIP from
+  **739 MB to 429 MB**. PyTorch is no longer shipped or imported, transcription
+  uses a small whisper.cpp CLI, and FFmpeg uses the essentials build. First
+  launch extracts far less data and the app starts noticeably faster.
 * **Google Drive** analysis now returns the downloaded local video URL, so the
   preview and Server Engine render the same file instead of trying to re-open the
   Drive share link.
@@ -359,10 +366,11 @@ to every rendered clip:
   extractor because `yt-dlp` does not have a Threads extractor yet.
 * Google Drive downloads are now validated as real video files (not HTML login
   or permission pages) before analysis starts.
-* The desktop build now bundles Whisper + PyTorch and the `base` model, so
-  Drive, Facebook/Threads, and uploaded videos can actually be transcribed
-  locally in the packaged app. Earlier installers excluded Whisper, which is
-  why those sources could not be analyzed.
+* The desktop build now bundles a lightweight whisper.cpp CLI and quantized
+  `base` model, so Drive, Facebook/Threads, and uploaded videos can be
+  transcribed locally without shipping ~1 GB of PyTorch. The smaller FFmpeg
+  essentials binaries (with libass subtitles + HW encoders) also cut the
+  installer size and first-launch extraction time substantially.
 * The render request now uses `result.video_url` first, fixing the old bug where
   Drive/upload renders fell back to an empty or YouTube URL.
 * Incomplete or corrupt source segments are retried automatically once before a

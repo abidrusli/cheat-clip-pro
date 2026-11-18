@@ -106,6 +106,8 @@ desktop/node_modules/
 desktop/release/
 desktop/pyinstaller/build/
 desktop/pyinstaller/dist/
+desktop/pyinstaller/tools/
+backend/models/whisper/*.bin
 
 # ─── MOBILE (ANDROID) ────────────────────────────────────────
 mobile/android/.gradle/

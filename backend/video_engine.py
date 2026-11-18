@@ -307,42 +307,169 @@ def ensure_ffmpeg_in_path():
 
 ensure_ffmpeg_in_path()
 
-# Global lazy-loaded whisper model
+# Global lazy-loaded Whisper engine. The desktop build uses a tiny whisper.cpp
+# CLI instead of PyTorch so startup stays fast and the installer stays small.
 _WHISPER_MODEL = None
 
 
-def _whisper_model_root() -> Optional[Path]:
-    """Locate a Whisper model bundled with the desktop app, if present."""
-    candidates: List[Path] = []
+def _runtime_roots() -> List[Path]:
+    """Directories that can contain bundled runtime resources."""
+    roots: List[Path] = []
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        candidates.append(Path(meipass) / "backend" / "models" / "whisper")
-    candidates.append(Path(__file__).resolve().parent / "models" / "whisper")
+        roots.append(Path(meipass))
+    roots.append(BUNDLE_DIR)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
-        candidates.append(exe_dir / "backend" / "models" / "whisper")
-        candidates.append(exe_dir / "_internal" / "backend" / "models" / "whisper")
-    for candidate in candidates:
-        if (candidate / "base.pt").exists():
-            return candidate
-    return None
+        roots.extend([exe_dir, exe_dir / "_internal"])
+    return roots
+
+
+def _whisper_cpp_paths() -> Tuple[Optional[Path], Optional[Path]]:
+    """Resolve (cli_path, model_path) for the bundled whisper.cpp runtime."""
+    cli_name = "whisper-cli.exe" if os.name == "nt" else "whisper-cli"
+    model_names = ("ggml-base-q8_0.bin", "ggml-base.bin")
+    for root in _runtime_roots():
+        cli = root / "whispercpp" / cli_name
+        if not cli.exists():
+            continue
+        for model_name in model_names:
+            candidates = [
+                root / "backend" / "models" / "whisper" / model_name,
+                root / "models" / "whisper" / model_name,
+            ]
+            for model in candidates:
+                if model.exists():
+                    return cli, model
+    return None, None
+
+
+class _WhisperCppModel:
+    """Drop-in replacement for the OpenAI Whisper model using whisper.cpp CLI.
+
+    It exposes the small subset of the Whisper Python API used by this app:
+    ``transcribe(path, word_timestamps=..., initial_prompt=...)``.
+    """
+
+    def __init__(self, cli: Path, model: Path):
+        self.cli = Path(cli)
+        self.model = Path(model)
+
+    @staticmethod
+    def _offsets_seconds(offsets: Dict[str, Any]) -> Tuple[float, float]:
+        start = float(offsets.get("from", 0) or 0) / 1000.0
+        end = float(offsets.get("to", 0) or 0) / 1000.0
+        return round(start, 3), round(max(end, start), 3)
+
+    @staticmethod
+    def _tokens_to_words(tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        words: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+
+        for token in tokens or []:
+            raw = str(token.get("text", "") or "")
+            if not raw or (raw.startswith("[") and raw.endswith("]")):
+                continue
+            clean = raw.strip()
+            if not clean:
+                continue
+
+            offsets = token.get("offsets") or {}
+            start, end = _WhisperCppModel._offsets_seconds(offsets)
+
+            # A leading space marks a new word; punctuation/subword fragments
+            # without a leading space are appended to the current word.
+            if current is None or raw[:1].isspace():
+                if current is not None:
+                    words.append(current)
+                current = {"word": clean, "start": start, "end": end}
+            else:
+                current["word"] += clean
+                current["end"] = end
+
+        if current is not None:
+            words.append(current)
+        return words
+
+    def transcribe(
+        self,
+        file_path: Union[str, Path],
+        word_timestamps: bool = True,
+        fp16: bool = False,
+        verbose: bool = False,
+        initial_prompt: Optional[str] = None,
+        **_kwargs: Any,
+    ) -> Dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="kliper-whisper-") as tmp:
+            work = Path(tmp)
+            wav_path = work / "audio.wav"
+            out_base = work / "result"
+
+            # whisper.cpp decodes raw audio; FFmpeg handles every video container.
+            extract = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(file_path), "-vn", "-ac", "1", "-ar", "16000",
+                "-c:a", "pcm_s16le", str(wav_path),
+            ]
+            subprocess.run(extract, check=True, capture_output=True, timeout=900)
+
+            threads = max(2, min((os.cpu_count() or 4), 12))
+            cmd = [
+                str(self.cli), "-m", str(self.model), "-f", str(wav_path),
+                "-l", "auto", "-oj", "-ojf", "-of", str(out_base),
+                "-t", str(threads),
+            ]
+            if initial_prompt:
+                cmd += ["--prompt", initial_prompt]
+
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                errors="replace", timeout=3600,
+            )
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or "").strip()[-1200:]
+                raise RuntimeError(f"whisper.cpp failed (exit {proc.returncode}): {tail}")
+
+            json_path = Path(str(out_base) + ".json")
+            if not json_path.exists():
+                raise RuntimeError("whisper.cpp did not produce a JSON result")
+            data = json.loads(json_path.read_text(encoding="utf-8", errors="replace"))
+
+        segments: List[Dict[str, Any]] = []
+        texts: List[str] = []
+        for seg in data.get("transcription", []) or []:
+            text = str(seg.get("text", "") or "").strip()
+            if not text:
+                continue
+            start, end = self._offsets_seconds(seg.get("offsets") or {})
+            segments.append({
+                "text": text,
+                "start": start,
+                "end": end,
+                "words": self._tokens_to_words(seg.get("tokens", []) or []),
+            })
+            texts.append(text)
+
+        return {"segments": segments, "text": " ".join(texts)}
 
 
 def get_whisper_model():
     global _WHISPER_MODEL
     if _WHISPER_MODEL is None:
-        try:
-            import whisper
-            logger.info("Loading Whisper 'base' model for word-level timestamps...")
-            model_root = _whisper_model_root()
-            if model_root:
-                logger.info("Using bundled Whisper model from: %s", model_root)
-                _WHISPER_MODEL = whisper.load_model("base", download_root=str(model_root))
-            else:
+        cli, model = _whisper_cpp_paths()
+        if cli and model:
+            logger.info("Using lightweight whisper.cpp runtime (no PyTorch required).")
+            _WHISPER_MODEL = _WhisperCppModel(cli, model)
+        else:
+            # Source/development fallback only. Desktop builds intentionally
+            # exclude openai-whisper and PyTorch from the bundle.
+            try:
+                import whisper
+                logger.info("Loading Whisper 'base' model for word-level timestamps...")
                 _WHISPER_MODEL = whisper.load_model("base")
-        except Exception as e:
-            logger.warning(f"Could not load Whisper model: {e}")
-            _WHISPER_MODEL = False
+            except Exception as e:
+                logger.warning(f"Could not load Whisper model: {e}")
+                _WHISPER_MODEL = False
     return _WHISPER_MODEL if _WHISPER_MODEL is not False else None
 
 
