@@ -116,6 +116,8 @@ SinyalAbidnet Kliper Pro uses Google's AI to find the best viral moments for fre
 
 > 💡 **Tip:** You can also type `mock` in the API Key box to test out the app with sample data without an API key!
 
+> ℹ️ **Gemini Free Tier:** kuota gratis hanya **20 request/hari per model**. Versi 1.0.6 sudah menggabungkan terjemahan dalam potongan besar dan langsung berhenti saat kuota habis, sehingga tidak boros request. Jika tetap habis, buat API key/project baru di Google AI Studio atau aktifkan billing.
+
 ---
 
 ## 🎯 How to Use

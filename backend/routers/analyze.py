@@ -65,8 +65,51 @@ from backend.utils.text import (
 )
 
 
-TRANSLATION_CHUNK_SIZE = 150
-TRANSLATION_TIMEOUT_SEC = 90.0
+# Larger chunks mean far fewer Gemini requests. On the Free Tier each model is
+# limited to 20 generateContent requests/day, so translating a long video in
+# 150-line slices could exhaust the quota in a single run.
+TRANSLATION_CHUNK_SIZE = 800
+TRANSLATION_TIMEOUT_SEC = 180.0
+
+
+def _format_gemini_error(exc: Exception, model_name: str) -> Tuple[bool, str]:
+    """Return (is_quota_error, pesan Bahasa Indonesia) untuk error Gemini."""
+    text = str(exc)
+    lowered = text.lower()
+    is_quota = (
+        "429" in text
+        or "resource_exhausted" in lowered
+        or "quota" in lowered
+        or "exceeded your current quota" in lowered
+    )
+    if not is_quota:
+        return False, f"Model {model_name} gagal: {text}"
+
+    retry_note = ""
+    match = re.search(r"retryDelay['\"]?\s*:\s*['\"](\d+(?:\.\d+)?)s", text)
+    if match:
+        seconds = int(float(match.group(1)))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        parts = []
+        if hours:
+            parts.append(f"{hours} jam")
+        if minutes:
+            parts.append(f"{minutes} menit")
+        if secs and not hours:
+            parts.append(f"{secs} detik")
+        retry_note = f" Coba lagi dalam {', '.join(parts)}."
+    else:
+        plain = re.search(r"Please retry in ([^'\"}\n]+)", text)
+        if plain:
+            retry_note = f" Coba lagi dalam {plain.group(1).strip()}."
+
+    message = (
+        f"Kuota harian Gemini gratis untuk model {model_name} sudah habis "
+        f"(20 request/hari per model).{retry_note} "
+        "Gunakan API key/project lain atau aktifkan billing, lalu coba lagi."
+    )
+    return True, message
 
 
 def _resolve_output_language(
@@ -241,7 +284,7 @@ def _translate_transcript_chunk(
                     time.sleep(1.2)
 
     raise RuntimeError(
-        f"Could not translate transcript chunk with available models: {last_error}"
+        f"Gagal menerjemahkan dengan model Gemini yang tersedia: {last_error}"
     )
 
 
