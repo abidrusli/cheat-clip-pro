@@ -277,9 +277,19 @@ def _translate_transcript_chunk(
                 ]
             except Exception as e:
                 last_error = e
+                error_text = str(e)
+                is_quota, friendly = _format_gemini_error(e, model_name)
+                is_not_found = "404" in error_text or "NOT_FOUND" in error_text.upper()
                 logger.warning(
-                    f"Translation with {model_name} failed (attempt {attempt + 1}/2): {e}"
+                    f"Translation with {model_name} failed (attempt {attempt + 1}/2): "
+                    f"{friendly if is_quota else error_text}"
                 )
+                if is_quota:
+                    raise RuntimeError(friendly) from e
+                if is_not_found:
+                    # Retired/unsupported model for this key. Do not waste a
+                    # second attempt; move straight to the next model.
+                    break
                 if attempt == 0:
                     time.sleep(1.2)
 
@@ -1172,23 +1182,28 @@ async def analyze_video(request: AnalyzeRequest):
         models_to_try = models_to_try[:4]
         logger.info(f"Flash fallback chain prepared: {models_to_try}")
 
-        # 1.0.7: subtitle translation is a high-volume, low-complexity job.
-        # Prefer Flash Lite models (separate quota bucket, lower latency) and
-        # only fall back to the full Flash models if a Lite model is unavailable.
+        # 1.0.7: subtitle translation is high-volume but low-complexity. Prefer
+        # Flash Lite models that THIS API key actually reported via ListModels.
+        # Never inject hardcoded legacy names here: models such as
+        # gemini-1.5-flash-8b have been retired and return 404 for new keys.
         translation_models = [
             m for m in models_to_try
             if 'lite' in m.lower() or '8b' in m.lower()
         ]
-        for known in KNOWN_FLASH_MODELS:
+        for model in discovered_flash:
             if (
-                ('lite' in known.lower() or '8b' in known.lower())
-                and known not in translation_models
+                ('lite' in model.lower() or '8b' in model.lower())
+                and model not in translation_models
             ):
-                translation_models.append(known)
+                translation_models.append(model)
         for model in models_to_try:
             if model not in translation_models:
                 translation_models.append(model)
-        translation_models = translation_models[:3]
+        # Extra safety: drop retired model IDs even if discovery returned them.
+        translation_models = [
+            m for m in translation_models
+            if m not in {"gemini-1.5-flash-8b", "gemini-1.0", "gemini-pro-vision"}
+        ][:3]
         logger.info(f"Flash translation chain prepared: {translation_models}")
 
         output_transcript = enriched_transcript
@@ -1235,8 +1250,7 @@ async def analyze_video(request: AnalyzeRequest):
                     logger.error(f"Transcript translation failed: {e}")
                     yield _sse({
                         "error": (
-                            f"Failed to translate the transcript to {output_lang_name}. "
-                            f"Please check your Gemini API key/quota and try again. Details: {e}"
+                            f"Gagal menerjemahkan transkrip ke {output_lang_name}: {e}"
                         ),
                         "status": 500,
                     })
