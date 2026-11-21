@@ -1,6 +1,6 @@
 # Deploy ke VPS (Debian 12 direkomendasikan)
 
-Panduan ini membuat backend + frontend 1.0.6 jalan 24/7 di VPS, sehingga HP cukup membuka APK dan PC tidak perlu menyala.
+Panduan ini membuat backend + frontend 1.0.7 jalan 24/7 di VPS, sehingga HP cukup membuka APK dan PC tidak perlu menyala.
 
 ## Alamat contoh
 

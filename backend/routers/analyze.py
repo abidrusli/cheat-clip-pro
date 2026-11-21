@@ -249,7 +249,7 @@ def _translate_transcript_chunk(
                         response_mime_type="application/json",
                         response_schema=TranslatedTranscript,
                         temperature=0.1,
-                        max_output_tokens=32768,
+                        max_output_tokens=16384,
                     ),
                 )
                 translated = _extract_translation_lines(response)
@@ -1172,6 +1172,25 @@ async def analyze_video(request: AnalyzeRequest):
         models_to_try = models_to_try[:4]
         logger.info(f"Flash fallback chain prepared: {models_to_try}")
 
+        # 1.0.7: subtitle translation is a high-volume, low-complexity job.
+        # Prefer Flash Lite models (separate quota bucket, lower latency) and
+        # only fall back to the full Flash models if a Lite model is unavailable.
+        translation_models = [
+            m for m in models_to_try
+            if 'lite' in m.lower() or '8b' in m.lower()
+        ]
+        for known in KNOWN_FLASH_MODELS:
+            if (
+                ('lite' in known.lower() or '8b' in known.lower())
+                and known not in translation_models
+            ):
+                translation_models.append(known)
+        for model in models_to_try:
+            if model not in translation_models:
+                translation_models.append(model)
+        translation_models = translation_models[:3]
+        logger.info(f"Flash translation chain prepared: {translation_models}")
+
         output_transcript = enriched_transcript
         if translation_needed:
             total_lines = len(output_transcript)
@@ -1205,7 +1224,7 @@ async def analyze_video(request: AnalyzeRequest):
                         asyncio.to_thread(
                             _translate_transcript_chunk,
                             client,
-                            models_to_try,
+                            translation_models,
                             chunk,
                             lang_name,
                             output_lang_name,

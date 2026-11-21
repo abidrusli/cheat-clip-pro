@@ -491,7 +491,9 @@ ENCODER_CONFIGS: Dict[str, Tuple[str, List[str]]] = {
     "nvenc": ("h264_nvenc", ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"]),
     "amf": ("h264_amf", ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cbr", "-b:v", "6M"]),
     "qsv": ("h264_qsv", ["-c:v", "h264_qsv", "-preset", "veryfast"]),
-    "cpu": ("libx264", ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]),
+    # 1.0.7: ultrafast keeps low-end laptops responsive. CRF 20 preserves
+    # readable subtitles despite the faster preset.
+    "cpu": ("libx264", ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20"]),
 }
 
 _DETECTED_SUPPORT: Optional[Dict[str, Any]] = None
@@ -2792,9 +2794,10 @@ def detect_speaker_face_box(
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        # 9 samples are enough to locate the speaker and cut detection time by
-        # roughly two-thirds versus the old 25-frame scan.
-        sample_count = 9
+        # 5 samples are enough for smart crop and keep face scanning cheap on
+        # low-end laptops. Explicit facecam presets return earlier and skip this
+        # scan entirely.
+        sample_count = 5
         step = max(1, total_frames // sample_count) if total_frames > sample_count else max(1, int(fps * 0.75))
 
         detections = []
@@ -3743,7 +3746,7 @@ def render_clip_to_mp4(
                 "-filter_complex", final_filter_complex,
                 "-map", out_video_map,
                 "-map", out_audio_map,
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
                 "-c:a", "aac", "-b:a", "192k",
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",

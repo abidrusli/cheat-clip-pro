@@ -344,6 +344,18 @@ to every rendered clip:
 * The grade is applied to the source video before titles/subtitles/watermarks are
   burned in, so text keeps its original color.
 
+### Kecepatan & stabilitas (1.0.7)
+
+* **Analisis lebih cepat:** terjemahan transkrip diproses per **800 baris** (dulu
+  150) dan memakai model **Gemini Flash Lite** lebih dulu, sehingga jumlah
+  request turun drastis dan antrean kuota harian tidak mudah habis.
+* **Render lebih cepat:** encoder CPU memakai `libx264 ultrafast` dengan CRF 20,
+  dan pemindaian wajah/facecam dipangkas dari 9 ke 5 sampel frame. Render
+  hardware (NVENC/AMF/QuickSync) tetap diprioritaskan bila tersedia.
+* **Error lebih jelas:** saat kuota Gemini habis, aplikasi langsung berhenti dan
+  menampilkan pesan Bahasa Indonesia lengkap dengan perkiraan waktu reset,
+  bukan retry berulang yang menghabiskan kuota model lain.
+
 ### Reliability & speed (1.0.6)
 
 * **Performance rebuild (same 1.0.6):** the frozen backend dropped from about
@@ -417,7 +429,7 @@ PC/VPS that the phone can reach over Wi-Fi or the internet.
 
 ### Option A — Desktop app (easiest)
 
-1. Install/run **SinyalAbidnet Kliper Pro 1.0.6** on the PC.
+1. Install/run **SinyalAbidnet Kliper Pro 1.0.7** on the PC.
 2. Click the **📱 Mobile** button in the app header.
    * The backend restarts on `0.0.0.0` and the LAN URL is copied to the
      clipboard, e.g. `http://192.168.1.10:54321`.

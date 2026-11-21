@@ -166,7 +166,7 @@ async def run_raw_clip_download_job(
                         "-i", source_video,
                         "-t", str(duration_sec),
                         "-c:v", "libx264",
-                        "-preset", "veryfast",
+                        "-preset", "ultrafast",
                         "-crf", "20",
                         "-c:a", "aac",
                         "-b:a", "192k",
